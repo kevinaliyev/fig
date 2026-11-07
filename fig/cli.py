@@ -16,6 +16,8 @@ from fig.core.config import FigState, get_fig_home
 from fig.core.engine import FigEngine, EngineResult
 from fig.core.backup import list_all_backups
 from fig.core.profiles import ProfileManager, BorrowSessionManager
+from fig.core.builder import run_builder
+from fig.core.viewer import view_template, edit_template, list_templates
 from fig.core.wizard import run_interactive_wizard
 
 
@@ -214,6 +216,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     sp_boot.add_argument("path", nargs="?", default=".", help="Path to dotfiles directory (default: .)")
     sp_boot.add_argument("--preview", "-n", action="store_true", help="Preview changes")
 
+    # build
+    sp_build = subparsers.add_parser("build", help="Build a configuration template via interactive REPL scanner")
+    sp_build.add_argument("target", nargs="?", help="Directory or remote Git URL (e.g. gh:user/dotfiles)")
+
     # sync / apply
     sp_sync = subparsers.add_parser("sync", aliases=["apply"], help="Synchronize system with active template")
     sp_sync.add_argument("--preview", "-n", action="store_true", help="Preview changes")
@@ -238,9 +244,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     # revert (alias: unborrow)
     subparsers.add_parser("revert", aliases=["unborrow"], help="Revert temporary dotfile override and restore original state")
 
-    # setup (interactive REPL wizard)
+    # setup (questionnaire wizard)
     sp_setup = subparsers.add_parser("setup", help="Run interactive setup wizard to generate starter fig.toml")
     sp_setup.add_argument("path", nargs="?", default=".", help="Output directory (default: .)")
+
+    # view & edit & template
+    sp_view = subparsers.add_parser("view", help="View active or specified template in clean formatted layout")
+    sp_view.add_argument("target", nargs="?", help="Template name, profile name, or path")
+
+    sp_edit = subparsers.add_parser("edit", help="Open template in visual editor ($EDITOR, nvim, notepad)")
+    sp_edit.add_argument("target", nargs="?", help="Template name, profile name, or path")
+
+    sp_tpl = subparsers.add_parser("template", help="Inspect and manage templates")
+    sp_tpl_sub = sp_tpl.add_subparsers(dest="template_action")
+    sp_tpl_view = sp_tpl_sub.add_parser("view", help="View template contents")
+    sp_tpl_view.add_argument("target", nargs="?", help="Template name, profile name, or path")
+    sp_tpl_edit = sp_tpl_sub.add_parser("edit", help="Edit template with $EDITOR")
+    sp_tpl_edit.add_argument("target", nargs="?", help="Template name, profile name, or path")
+    sp_tpl_sub.add_parser("list", help="List all saved templates")
 
     # profile
     sp_profile = subparsers.add_parser("profile", help="Manage named configuration profiles")
@@ -262,6 +283,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     cmd = args.command
     if cmd == "bootstrap":
         return cmd_bootstrap(engine, Path(args.path).resolve(), dry_run=args.preview or getattr(args, "preview", False))
+    elif cmd == "build":
+        out = run_builder(args.target, interactive=sys.stdin.isatty())
+        return 0 if out else 1
     elif cmd in ("sync", "apply"):
         return cmd_sync(engine, dry_run=args.preview or getattr(args, "preview", False))
     elif cmd in ("check", "status"):
@@ -279,6 +303,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif cmd == "setup":
         run_interactive_wizard(Path(args.path).resolve(), interactive=sys.stdin.isatty())
         return 0
+    elif cmd == "view":
+        return view_template(engine.state, args.target)
+    elif cmd == "edit":
+        return edit_template(engine.state, args.target)
+    elif cmd == "template":
+        if args.template_action == "view":
+            return view_template(engine.state, args.target)
+        elif args.template_action == "edit":
+            return edit_template(engine.state, args.target)
+        else:
+            return list_templates(engine.state)
     elif cmd == "profile":
         pm = ProfileManager(engine.state)
         if args.profile_action == "list":
@@ -308,17 +343,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         # Active template exists -> routine sync
         return cmd_sync(engine, dry_run=args.preview)
     else:
-        # No active template exists and not bootstrap -> enter interactive setup wizard
+        # No active template exists and not bootstrap -> enter builder REPL
         is_interactive = sys.stdin.isatty()
         if is_interactive:
-            run_interactive_wizard(Path.cwd(), interactive=True)
-            return 0
+            out = run_builder(interactive=True)
+            return 0 if out else 1
         else:
             # Non-interactive shell (e.g. pipe, script)
             print_banner()
             print("No active template configured.")
-            print("To generate a starter template, run: fig setup")
-            print("To bootstrap from your dotfiles repo, run: fig -bootstrap /path/to/dotfiles\n")
+            print("To build a template from your dotfiles: fig build [dir_or_git_url]")
+            print("To bootstrap from a dotfiles repo:     fig -bootstrap /path/to/dotfiles\n")
             return 0
 
 

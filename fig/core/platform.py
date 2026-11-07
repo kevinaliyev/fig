@@ -7,16 +7,16 @@ from __future__ import annotations
 
 import os
 import sys
+import shutil
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 class OperatingSystem(str, Enum):
     WINDOWS = "windows"
     LINUX = "linux"
     MACOS = "macos"
-    BSD = "bsd"
     UNKNOWN = "unknown"
 
 
@@ -29,8 +29,6 @@ def detect_os() -> OperatingSystem:
         return OperatingSystem.MACOS
     elif plat.startswith("linux"):
         return OperatingSystem.LINUX
-    elif "bsd" in plat:
-        return OperatingSystem.BSD
     return OperatingSystem.UNKNOWN
 
 
@@ -38,24 +36,30 @@ def detect_os() -> OperatingSystem:
 CURRENT_OS: OperatingSystem = detect_os()
 
 
-def get_os_aliases(os_type: Optional[OperatingSystem] = None) -> list[str]:
+def get_os_aliases(os_type: Optional[OperatingSystem] = None) -> List[str]:
     """Return recognized aliases for the OS (e.g. macos -> ['macos', 'darwin', 'osx'])."""
     target = os_type or CURRENT_OS
     if target == OperatingSystem.WINDOWS:
         return ["windows", "win", "win32"]
     elif target == OperatingSystem.MACOS:
-        return ["macos", "darwin", "osx", "mac"]
+        return ["macos", "darwin", "osx", "mac", "posix", "unix"]
     elif target == OperatingSystem.LINUX:
-        return ["linux", "gnu/linux"]
-    elif target == OperatingSystem.BSD:
-        return ["bsd", "freebsd", "openbsd", "netbsd"]
+        return ["linux", "gnu/linux", "posix", "unix"]
     return [str(target.value)]
 
 
 def matches_current_os(os_identifier: str, target_os: Optional[OperatingSystem] = None) -> bool:
-    """Check if given string identifier matches the target OS (defaults to current OS)."""
+    """Check if given string identifier matches the target OS (defaults to current OS).
+    Also supports 'posix' / 'unix' matching both Linux and macOS.
+    """
     clean = os_identifier.strip().lower()
-    return clean in get_os_aliases(target_os)
+    target = target_os or CURRENT_OS
+
+    # Universal posix/unix check
+    if clean in ("posix", "unix"):
+        return target in (OperatingSystem.LINUX, OperatingSystem.MACOS)
+
+    return clean in get_os_aliases(target)
 
 
 def get_user_home() -> Path:
@@ -71,7 +75,6 @@ def get_user_documents() -> Path:
     """
     home = get_user_home()
     if CURRENT_OS == OperatingSystem.WINDOWS:
-        # Check registry or standard folder
         docs = home / "Documents"
         if docs.exists():
             return docs
@@ -115,3 +118,21 @@ def resolve_native_path(path_expr: str) -> Path:
     # Convert to Path object with native separators
     p = Path(expanded)
     return p
+
+
+def get_preferred_editor() -> str:
+    """Find the user's preferred text editor or a sensible system fallback."""
+    for env_var in ("VISUAL", "EDITOR"):
+        ed = os.environ.get(env_var)
+        if ed and ed.strip():
+            return ed.strip()
+
+    # Common terminal editors
+    candidates = ["nvim", "vim", "nano", "hx", "code", "subl"]
+    for c in candidates:
+        if shutil.which(c):
+            return c
+
+    if CURRENT_OS == OperatingSystem.WINDOWS:
+        return "notepad"
+    return "nano"

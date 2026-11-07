@@ -21,9 +21,13 @@ class TestPlatform(unittest.TestCase):
             OperatingSystem.WINDOWS,
             OperatingSystem.LINUX,
             OperatingSystem.MACOS,
-            OperatingSystem.BSD,
         ])
         self.assertTrue(matches_current_os(CURRENT_OS.value))
+
+    def test_posix_matches_linux_and_macos(self):
+        self.assertTrue(matches_current_os("posix", target_os=OperatingSystem.LINUX))
+        self.assertTrue(matches_current_os("posix", target_os=OperatingSystem.MACOS))
+        self.assertFalse(matches_current_os("posix", target_os=OperatingSystem.WINDOWS))
 
     def test_resolve_native_path_home(self):
         home_path = resolve_native_path("~")
