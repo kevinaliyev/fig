@@ -164,6 +164,15 @@ class FigEngine:
             else:
                 result.failed.append((src, dest_raw, msg))
 
+        # If this run was a complete no-op (nothing created and nothing backed up),
+        # clean up the redundant empty session directory
+        if not dry_run and session and not result.created and not result.backed_up:
+            try:
+                shutil.rmtree(session.session_dir, ignore_errors=True)
+                result.backup_id = None
+            except Exception:
+                pass
+
         return result
 
     def status(self) -> Dict[str, Any]:

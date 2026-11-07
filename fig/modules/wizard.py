@@ -1,5 +1,4 @@
 """Interactive Setup Wizard (REPL) for Fig.
-Runs when 'fig' is invoked without an active template and without bootstrap flags.
 Guides the user through simple questions to generate a starter fig.toml template.
 """
 
@@ -164,7 +163,6 @@ def run_interactive_wizard(
         elif chosen_term == "windows-terminal":
             os_mappings.setdefault("windows", {})["wt_settings.json"] = "%LOCALAPPDATA%/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json"
 
-    # Create Template
     tpl = Template(
         name="starter-dotfiles",
         description=f"Starter configuration generated for {CURRENT_OS.value}",

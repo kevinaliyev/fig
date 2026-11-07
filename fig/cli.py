@@ -15,10 +15,13 @@ from fig.core.platform import CURRENT_OS
 from fig.core.config import FigState, get_fig_home
 from fig.core.engine import FigEngine, EngineResult
 from fig.core.backup import list_all_backups
-from fig.core.profiles import ProfileManager, BorrowSessionManager
-from fig.core.builder import run_builder
-from fig.core.viewer import view_template, edit_template, list_templates
-from fig.core.wizard import run_interactive_wizard
+from fig.core.template import Template, discover_template
+from fig.core.logger import log_event
+from fig.modules.profiles import ProfileManager, BorrowSessionManager
+from fig.modules.builder import run_builder
+from fig.modules.viewer import view_template, edit_template, list_templates
+from fig.modules.wizard import run_interactive_wizard
+from fig.modules.system import SystemConfigManager
 
 
 def print_banner() -> None:
@@ -58,27 +61,59 @@ def print_engine_result(result: EngineResult) -> None:
     print()
 
 
-def cmd_bootstrap(engine: FigEngine, path: Path, dry_run: bool) -> int:
+def cmd_bootstrap(engine: FigEngine, path: Path, dry_run: bool, is_system: bool = False, force_yes: bool = False) -> int:
     try:
         res = engine.bootstrap(path, dry_run=dry_run)
         print_engine_result(res)
-        return 0 if res.is_success else 1
+        if not res.is_success:
+            return 1
+
+        if is_system:
+            tpl_path = engine.state.get_active_template_path()
+            if tpl_path:
+                tpl = Template.load(tpl_path)
+                sys_res = SystemConfigManager(engine.state).apply_system(
+                    tpl, path, force_yes=force_yes, dry_run=dry_run
+                )
+                print_engine_result(sys_res)
+                return 0 if sys_res.is_success else 1
+
+        return 0
     except Exception as e:
         print(f"Error during bootstrap: {e}", file=sys.stderr)
+        log_event(f"Bootstrap failure: {e}", is_system=is_system, level="ERROR")
         return 1
 
 
-def cmd_sync(engine: FigEngine, dry_run: bool) -> int:
+def cmd_sync(engine: FigEngine, dry_run: bool, is_system: bool = False, force_yes: bool = False) -> int:
     try:
-        res = engine.apply(dry_run=dry_run)
+        active_path = engine.state.get_active_template_path()
+        if not active_path or not active_path.exists():
+            raise RuntimeError("No active template registered. Run 'fig bootstrap' first.")
+
+        cfg = engine.state.load_config()
+        repo_root_str = cfg.get("active", {}).get("repo_root")
+        repo_root = Path(repo_root_str).resolve() if repo_root_str else active_path.parent.resolve()
+        tpl = Template.load(active_path)
+
+        if is_system:
+            # System mode deployment
+            res = SystemConfigManager(engine.state).apply_system(
+                tpl, repo_root, force_yes=force_yes, dry_run=dry_run
+            )
+        else:
+            # User mode deployment
+            res = engine.apply(dry_run=dry_run)
+
         print_engine_result(res)
         return 0 if res.is_success else 1
     except Exception as e:
         print(f"Error during sync: {e}", file=sys.stderr)
+        log_event(f"Sync failure: {e}", is_system=is_system, level="ERROR")
         return 1
 
 
-def cmd_check(engine: FigEngine) -> int:
+def cmd_check(engine: FigEngine, is_system: bool = False) -> int:
     info = engine.status()
     if "error" in info:
         print(info["error"])
@@ -90,30 +125,38 @@ def cmd_check(engine: FigEngine) -> int:
 
     mappings = info.get("mappings", [])
     if not mappings:
-        print("No mappings configured in active template.")
-        return 0
+        print("No user mappings configured in active template.")
+    else:
+        print("User Target Statuses:")
+        for m in mappings:
+            st = m["status"]
+            tag = "[OK]      " if st == "linked" else ("[DRIFT]   " if st == "drifted" else ("[CONFLICT]" if st == "collision" else "[MISSING] "))
+            detail = f" -> {m['current_target']}" if m.get("current_target") else ""
+            print(f"  {tag} {m['destination']}{detail}")
 
-    print("Target Statuses:")
-    for m in mappings:
-        st = m["status"]
-        if st == "linked":
-            tag = "[OK]      "
-        elif st == "drifted":
-            tag = "[DRIFT]   "
-        elif st == "collision":
-            tag = "[CONFLICT]"
-        else:
-            tag = "[MISSING] "
-        
-        detail = f" -> {m['current_target']}" if m.get("current_target") else ""
-        print(f"  {tag} {m['destination']}{detail}")
+    # Check system configs if present or if requested
+    tpl = Template.load(Path(info["active_template"]))
+    if tpl.has_system_mappings:
+        print("\nSystem Target Statuses:")
+        try:
+            sys_plan = tpl.resolve_plan(Path(info["repo_root"]), is_system=True)
+            for src, dest in sys_plan:
+                exists = dest.exists() or dest.is_symlink()
+                tag = "[EXISTS]  " if exists else "[NOT SET] "
+                print(f"  {tag} {dest}")
+        except Exception as err:
+            print(f"  [!] System plan resolution error: {err}")
 
     return 0
 
 
-def cmd_undo(engine: FigEngine, backup_id: Optional[str]) -> int:
+def cmd_undo(engine: FigEngine, backup_id: Optional[str], is_system: bool = False, force_yes: bool = False) -> int:
     try:
-        restored, removed_new = engine.restore_backup(backup_id)
+        if is_system:
+            restored, removed_new = SystemConfigManager(engine.state).restore_system(backup_id, force_yes=force_yes)
+        else:
+            restored, removed_new = engine.restore_backup(backup_id)
+
         print("Undo / Rollback complete.")
         if restored:
             print(f"\nRestored {len(restored)} original file(s):")
@@ -126,16 +169,20 @@ def cmd_undo(engine: FigEngine, backup_id: Optional[str]) -> int:
         return 0
     except Exception as e:
         print(f"Error during undo: {e}", file=sys.stderr)
+        log_event(f"Undo failure: {e}", is_system=is_system, level="ERROR")
         return 1
 
 
-def cmd_history(engine: FigEngine) -> int:
-    backups = list_all_backups(engine.state.backups_dir)
+def cmd_history(engine: FigEngine, is_system: bool = False) -> int:
+    target_vault = SystemConfigManager(engine.state).get_system_redundancy_dir() if is_system else engine.state.backups_dir
+    backups = list_all_backups(target_vault)
+    scope = "System Redundancy Vault" if is_system else "User Vault"
+
     if not backups:
-        print("No backup history found in Fig vault.")
+        print(f"No backup history found in {scope} ({target_vault}).")
         return 0
 
-    print(f"Fig Backup History ({engine.state.backups_dir}):\n")
+    print(f"Fig Backup History — {scope} ({target_vault}):\n")
     for b in backups:
         print(f"  Session ID: {b['id']}")
         print(f"    Date:     {b['timestamp']}")
@@ -146,7 +193,6 @@ def cmd_history(engine: FigEngine) -> int:
 
 
 def cmd_temp(engine: FigEngine, repo_dir: Path) -> int:
-    """Temporarily deploy dotfiles for a work session on a coworker/shared machine."""
     bm = BorrowSessionManager(engine.state)
     if bm.has_active_borrow():
         print("An active temporary session already exists. Run 'fig revert' first.", file=sys.stderr)
@@ -167,7 +213,6 @@ def cmd_temp(engine: FigEngine, repo_dir: Path) -> int:
 
 
 def cmd_revert(engine: FigEngine) -> int:
-    """Revert temporary session and restore original machine state."""
     bm = BorrowSessionManager(engine.state)
     info = bm.get_borrow_info()
     if not info:
@@ -203,6 +248,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Bootstrap dotfiles from DIR (default: current directory)",
     )
     parser.add_argument(
+        "--system", "-system",
+        action="store_true",
+        help="Operate in SYSTEM mode (targets elevated /etc, systemd, or Windows system files)",
+    )
+    parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Automatic confirmation to proceed through warnings without prompting",
+    )
+    parser.add_argument(
         "--preview", "--dry-run", "-n",
         dest="preview",
         action="store_true",
@@ -214,28 +269,39 @@ def main(argv: Optional[List[str]] = None) -> int:
     # bootstrap
     sp_boot = subparsers.add_parser("bootstrap", help="Deploy dotfiles from repository & register as active")
     sp_boot.add_argument("path", nargs="?", default=".", help="Path to dotfiles directory (default: .)")
+    sp_boot.add_argument("--system", "-system", action="store_true", help="Include system configurations")
+    sp_boot.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
     sp_boot.add_argument("--preview", "-n", action="store_true", help="Preview changes")
 
     # build
     sp_build = subparsers.add_parser("build", help="Build a configuration template via interactive REPL scanner")
     sp_build.add_argument("target", nargs="?", help="Directory or remote Git URL (e.g. gh:user/dotfiles)")
+    sp_build.add_argument("--system", "-system", action="store_true", help="Build/review system configuration specifications")
+    sp_build.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
     # sync / apply
     sp_sync = subparsers.add_parser("sync", aliases=["apply"], help="Synchronize system with active template")
+    sp_sync.add_argument("--system", "-system", action="store_true", help="Apply system configurations")
+    sp_sync.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
     sp_sync.add_argument("--preview", "-n", action="store_true", help="Preview changes")
 
     # check (alias: status)
-    subparsers.add_parser("check", aliases=["status"], help="Check health and link status of managed dotfiles")
+    sp_check = subparsers.add_parser("check", aliases=["status"], help="Check health and link status of managed dotfiles")
+    sp_check.add_argument("--system", "-system", action="store_true", help="Check system configurations")
 
     # preview (alias: diff)
-    subparsers.add_parser("preview", aliases=["diff"], help="Preview planned changes against active template")
+    sp_prev = subparsers.add_parser("preview", aliases=["diff"], help="Preview planned changes against active template")
+    sp_prev.add_argument("--system", "-system", action="store_true", help="Preview system configurations")
 
     # undo (alias: rollback, restore)
     sp_undo = subparsers.add_parser("undo", aliases=["rollback", "restore"], help="Undo changes and restore previous files")
     sp_undo.add_argument("backup_id", nargs="?", help="Specific backup ID to restore (default: most recent)")
+    sp_undo.add_argument("--system", "-system", action="store_true", help="Restore system configurations from redundancy vault")
+    sp_undo.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
     # history (alias: backups)
-    subparsers.add_parser("history", aliases=["backups"], help="List backup vault history")
+    sp_hist = subparsers.add_parser("history", aliases=["backups"], help="List backup vault history")
+    sp_hist.add_argument("--system", "-system", action="store_true", help="List system redundancy vault backups")
 
     # temp (alias: guest, borrow)
     sp_temp = subparsers.add_parser("temp", aliases=["guest", "borrow"], help="Temporarily deploy dotfiles on coworker machine")
@@ -273,29 +339,57 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     engine = FigEngine()
+    is_system_mode = getattr(args, "system", False)
+    force_yes = getattr(args, "yes", False)
 
     # Case 1: Flag --bootstrap or -bootstrap passed
     if args.bootstrap is not None:
         target_path = Path(args.bootstrap).resolve()
-        return cmd_bootstrap(engine, target_path, dry_run=args.preview)
+        return cmd_bootstrap(engine, target_path, dry_run=args.preview, is_system=is_system_mode, force_yes=force_yes)
 
     # Case 2: Subcommands
     cmd = args.command
     if cmd == "bootstrap":
-        return cmd_bootstrap(engine, Path(args.path).resolve(), dry_run=args.preview or getattr(args, "preview", False))
+        return cmd_bootstrap(
+            engine,
+            Path(args.path).resolve(),
+            dry_run=args.preview or getattr(args, "preview", False),
+            is_system=is_system_mode or getattr(args, "system", False),
+            force_yes=force_yes or getattr(args, "yes", False),
+        )
     elif cmd == "build":
-        out = run_builder(args.target, interactive=sys.stdin.isatty())
+        out = run_builder(
+            args.target,
+            interactive=sys.stdin.isatty(),
+            is_system=is_system_mode or getattr(args, "system", False),
+            force_yes=force_yes or getattr(args, "yes", False),
+        )
         return 0 if out else 1
     elif cmd in ("sync", "apply"):
-        return cmd_sync(engine, dry_run=args.preview or getattr(args, "preview", False))
+        return cmd_sync(
+            engine,
+            dry_run=args.preview or getattr(args, "preview", False),
+            is_system=is_system_mode or getattr(args, "system", False),
+            force_yes=force_yes or getattr(args, "yes", False),
+        )
     elif cmd in ("check", "status"):
-        return cmd_check(engine)
+        return cmd_check(engine, is_system=is_system_mode or getattr(args, "system", False))
     elif cmd in ("preview", "diff"):
-        return cmd_sync(engine, dry_run=True)
+        return cmd_sync(
+            engine,
+            dry_run=True,
+            is_system=is_system_mode or getattr(args, "system", False),
+            force_yes=True,
+        )
     elif cmd in ("undo", "rollback", "restore"):
-        return cmd_undo(engine, args.backup_id)
+        return cmd_undo(
+            engine,
+            args.backup_id,
+            is_system=is_system_mode or getattr(args, "system", False),
+            force_yes=force_yes or getattr(args, "yes", False),
+        )
     elif cmd in ("history", "backups"):
-        return cmd_history(engine)
+        return cmd_history(engine, is_system=is_system_mode or getattr(args, "system", False))
     elif cmd in ("temp", "guest", "borrow"):
         return cmd_temp(engine, Path(args.path).resolve())
     elif cmd in ("revert", "unborrow"):
@@ -329,7 +423,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             try:
                 pm.switch_profile(args.name)
                 print(f"Switched active profile to '{args.name}'. Synchronizing...")
-                return cmd_sync(engine, dry_run=False)
+                return cmd_sync(engine, dry_run=False, is_system=is_system_mode, force_yes=force_yes)
             except Exception as e:
                 print(f"Error switching profile: {e}", file=sys.stderr)
                 return 1
@@ -341,15 +435,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     active_path = engine.state.get_active_template_path()
     if active_path and active_path.exists():
         # Active template exists -> routine sync
-        return cmd_sync(engine, dry_run=args.preview)
+        return cmd_sync(engine, dry_run=args.preview, is_system=is_system_mode, force_yes=force_yes)
     else:
         # No active template exists and not bootstrap -> enter builder REPL
         is_interactive = sys.stdin.isatty()
         if is_interactive:
-            out = run_builder(interactive=True)
+            out = run_builder(interactive=True, is_system=is_system_mode, force_yes=force_yes)
             return 0 if out else 1
         else:
-            # Non-interactive shell (e.g. pipe, script)
             print_banner()
             print("No active template configured.")
             print("To build a template from your dotfiles: fig build [dir_or_git_url]")

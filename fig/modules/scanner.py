@@ -23,7 +23,6 @@ IGNORE_FILE_NAMES = {
     "fig.toml", ".fig.toml", "fig.template.toml", ".DS_Store"
 }
 
-# Known applications whose entire directory should be linked to config directory
 KNOWN_CONFIG_DIRS = {
     "nvim": {"posix": "~/.config/nvim", "windows": "%LOCALAPPDATA%/nvim"},
     "neovim": {"posix": "~/.config/nvim", "windows": "%LOCALAPPDATA%/nvim"},
@@ -49,6 +48,7 @@ class DiscoveredConfig:
     dest_expr: str
     is_directory: bool
     is_excluded: bool = False
+    is_system: bool = False
     detection_source: str = "auto"
     os_target: Optional[str] = None  # None = universal, "windows", "posix", "linux", "macos"
 
@@ -57,46 +57,57 @@ class DiscoveredConfig:
         return "[dir]" if self.is_directory else "[file]"
 
 
-def parse_pathspec_file(pathspec_file: Path) -> Dict[str, str]:
+def is_system_path(dest_expr: str) -> bool:
+    """Check if destination expression targets root/system directories."""
+    clean = dest_expr.strip().replace("\\", "/").lower()
+    if clean.startswith(("/etc/", "/usr/", "/var/", "/opt/")):
+        return True
+    if clean.startswith(("c:/windows", "c:/program files", "c:/programdata", "%programdata%", "%systemroot%")):
+        return True
+    return False
+
+
+def parse_pathspec_file(pathspec_file: Path) -> Tuple[Dict[str, str], bool]:
     """Parse a pathspec.txt file.
-    Supports either:
-      - Simple single line: ~/.local/share/app
-      - Key/value pairs:
-          destination = ~/.local/share/app
-          windows = %APPDATA%/app
-          posix = ~/.config/app
-          linux = ~/.config/app
-          macos = ~/Library/Application Support/app
+    Returns (targets_dict, is_system_scope).
     """
     results: Dict[str, str] = {}
+    is_system = False
     if not pathspec_file.is_file():
-        return results
+        return results, is_system
 
     try:
         lines = pathspec_file.read_text(encoding="utf-8").splitlines()
     except Exception:
-        return results
+        return results, is_system
 
     cleaned_lines = [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
     if not cleaned_lines:
-        return results
-
-    # If first line has no '=', treat whole first line as default destination
-    if "=" not in cleaned_lines[0]:
-        results["universal"] = cleaned_lines[0]
-        return results
+        return results, is_system
 
     for line in cleaned_lines:
         if "=" in line:
             key, val = line.split("=", 1)
             k = key.strip().lower()
             v = val.strip().strip('"').strip("'")
-            if k in ("destination", "dest", "target", "default", "universal"):
+            if k == "scope":
+                if v.lower() == "system":
+                    is_system = True
+            elif k in ("destination", "dest", "target", "default", "universal"):
                 results["universal"] = v
+                if is_system_path(v):
+                    is_system = True
             else:
                 results[k] = v
+                if is_system_path(v):
+                    is_system = True
+        else:
+            # First line without '='
+            results["universal"] = line
+            if is_system_path(line):
+                is_system = True
 
-    return results
+    return results, is_system
 
 
 class RepoScanner:
@@ -105,51 +116,46 @@ class RepoScanner:
     def __init__(self, repo_root: Path):
         self.repo_root = repo_root.resolve()
 
-    def scan(self) -> List[DiscoveredConfig]:
-        """Scan repository directory tree and identify all application configs."""
+    def scan(self, scan_system: bool = False) -> List[DiscoveredConfig]:
+        """Scan repository directory tree.
+        If scan_system is False (default): ONLY returns user configs. System configs are skipped!
+        If scan_system is True: returns ONLY system-scoped configs with explicit pathspecs.
+        """
         discovered: List[DiscoveredConfig] = []
         seen_sources: set[str] = set()
 
         if not self.repo_root.is_dir():
             return discovered
 
-        # 1. Search for explicit pathspec.txt / .pathspec files
-        for p in self.repo_root.rglob("pathspec.txt"):
-            parent_dir = p.parent
-            if any(part in IGNORE_DIR_NAMES for part in parent_dir.parts):
-                continue
-            rel_dir = parent_dir.relative_to(self.repo_root)
-            specs = parse_pathspec_file(p)
-            for os_key, dest in specs.items():
-                target_os = None if os_key == "universal" else os_key
-                discovered.append(DiscoveredConfig(
-                    app_name=parent_dir.name,
-                    source_rel=str(rel_dir).replace("\\", "/"),
-                    dest_expr=dest,
-                    is_directory=True,
-                    detection_source="pathspec.txt",
-                    os_target=target_os,
-                ))
-            seen_sources.add(str(rel_dir).replace("\\", "/"))
+        # 1. Search for explicit pathspec.txt / .fig.pathspec files
+        for p_name in ("pathspec.txt", ".fig.pathspec"):
+            for p in self.repo_root.rglob(p_name):
+                parent_dir = p.parent
+                if any(part in IGNORE_DIR_NAMES for part in parent_dir.parts):
+                    continue
+                rel_dir = parent_dir.relative_to(self.repo_root)
+                specs, item_is_sys = parse_pathspec_file(p)
 
-        # Also check .fig.pathspec
-        for p in self.repo_root.rglob(".fig.pathspec"):
-            parent_dir = p.parent
-            if any(part in IGNORE_DIR_NAMES for part in parent_dir.parts):
-                continue
-            rel_dir = parent_dir.relative_to(self.repo_root)
-            specs = parse_pathspec_file(p)
-            for os_key, dest in specs.items():
-                target_os = None if os_key == "universal" else os_key
-                discovered.append(DiscoveredConfig(
-                    app_name=parent_dir.name,
-                    source_rel=str(rel_dir).replace("\\", "/"),
-                    dest_expr=dest,
-                    is_directory=True,
-                    detection_source="pathspec.txt",
-                    os_target=target_os,
-                ))
-            seen_sources.add(str(rel_dir).replace("\\", "/"))
+                # Filter by requested scope
+                if scan_system != item_is_sys:
+                    continue
+
+                for os_key, dest in specs.items():
+                    target_os = None if os_key == "universal" else os_key
+                    discovered.append(DiscoveredConfig(
+                        app_name=parent_dir.name,
+                        source_rel=str(rel_dir).replace("\\", "/"),
+                        dest_expr=dest,
+                        is_directory=True,
+                        is_system=item_is_sys,
+                        detection_source="pathspec.txt",
+                        os_target=target_os,
+                    ))
+                seen_sources.add(str(rel_dir).replace("\\", "/"))
+
+        # If only scanning system, user auto-discovery is NOT run!
+        if scan_system:
+            return discovered
 
         # 2. Check for .config / config directory mirror
         for config_cand in [self.repo_root / ".config", self.repo_root / "config"]:
@@ -161,8 +167,6 @@ class RepoScanner:
                     if rel_path in seen_sources:
                         continue
 
-                    # If item is a directory (e.g. .config/nvim), link whole directory
-                    # On Windows, link to %APPDATA%/app or ~/.config/app
                     app_name = item.name
                     win_dest = f"%APPDATA%/{app_name}" if item.is_dir() else f"~/.config/{app_name}"
                     posix_dest = f"~/.config/{app_name}"
@@ -198,7 +202,7 @@ class RepoScanner:
                         ))
                     seen_sources.add(rel_path)
 
-        # 3. Check for top-level directories named after known applications (nvim, alacritty, kitty, etc.)
+        # 3. Check for top-level directories named after known applications
         for item in self.repo_root.iterdir():
             if not item.is_dir() or item.name.startswith(".") or item.name in IGNORE_DIR_NAMES:
                 continue
@@ -239,7 +243,6 @@ class RepoScanner:
                     ))
                 seen_sources.add(rel_path)
 
-            # Check for stow-style folders (e.g. git/.gitconfig, zsh/.zshrc, tmux/.tmux.conf)
             elif (item / ".gitconfig").exists():
                 discovered.append(DiscoveredConfig(
                     app_name="git",
@@ -289,7 +292,6 @@ class RepoScanner:
                 ))
                 seen_sources.add(rel_path)
             elif (item / "init.lua").exists() or (item / "init.vim").exists():
-                # Generic neovim / vim directory
                 discovered.append(DiscoveredConfig(
                     app_name=item.name,
                     source_rel=rel_path,
@@ -308,7 +310,6 @@ class RepoScanner:
                 ))
                 seen_sources.add(rel_path)
             else:
-                # Any other directory in repo defaults to ~/.config/<name>
                 discovered.append(DiscoveredConfig(
                     app_name=item.name,
                     source_rel=rel_path,
@@ -327,7 +328,7 @@ class RepoScanner:
                 continue
 
             name = item.name
-            if name == ".gitconfig" or name == "gitconfig":
+            if name in (".gitconfig", "gitconfig"):
                 discovered.append(DiscoveredConfig(
                     app_name="git",
                     source_rel=rel_path,
@@ -386,7 +387,6 @@ class RepoScanner:
                     detection_source="wezterm config",
                 ))
             elif name.startswith("."):
-                # Generic home dotfile (e.g. .inputrc, .editorconfig)
                 discovered.append(DiscoveredConfig(
                     app_name=name.lstrip("."),
                     source_rel=rel_path,
@@ -395,7 +395,6 @@ class RepoScanner:
                     detection_source="home dotfile",
                 ))
             else:
-                # Top-level non-hidden file
                 discovered.append(DiscoveredConfig(
                     app_name=Path(name).stem,
                     source_rel=rel_path,

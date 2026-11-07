@@ -1,6 +1,6 @@
 """Template Viewer and Visual Editor Module for Fig.
-Provides colorized inspection of active or catalog templates and launches
-visual editors ($VISUAL, $EDITOR, nvim, vim, notepad) to edit them in place.
+Provides colorized inspection of active or catalog templates (including system sections)
+and launches visual editors ($VISUAL, $EDITOR, nvim, vim, notepad) to edit them in place.
 """
 
 from __future__ import annotations
@@ -10,11 +10,6 @@ import sys
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # type: ignore
 
 from fig.core.config import FigState
 from fig.core.platform import CURRENT_OS, get_preferred_editor
@@ -28,7 +23,6 @@ def resolve_template_target(state: FigState, name_or_path: Optional[str] = None)
         if cand.is_file():
             return cand.resolve()
         
-        # Check profiles directory
         prof = state.profiles_dir / f"{name_or_path}.toml"
         if prof.is_file():
             return prof.resolve()
@@ -39,7 +33,6 @@ def resolve_template_target(state: FigState, name_or_path: Optional[str] = None)
         
         return None
 
-    # Default to active template
     active = state.get_active_template_path()
     if active and active.exists():
         return active
@@ -73,13 +66,13 @@ def format_template_view(tpl: Template, path: Path) -> str:
         lines.append("")
 
     if tpl.mappings:
-        lines.append("Universal Mappings:")
+        lines.append("Universal User Mappings:")
         for src, dest in sorted(tpl.mappings.items()):
             lines.append(f"  {src:<24} -> {dest}")
         lines.append("")
 
     if tpl.os_mappings:
-        lines.append("Platform-Specific Mappings:")
+        lines.append("Platform-Specific User Mappings:")
         for os_name, mapping_dict in sorted(tpl.os_mappings.items()):
             active_marker = " [ACTIVE ON THIS HOST]" if os_name in (CURRENT_OS.value, "posix") else ""
             lines.append(f"  [{os_name}]{active_marker}")
@@ -92,6 +85,24 @@ def format_template_view(tpl: Template, path: Path) -> str:
         for os_name, presets_list in sorted(tpl.os_presets.items()):
             lines.append(f"  [{os_name}]: {', '.join(presets_list)}")
         lines.append("")
+
+    # System configuration sections
+    if tpl.system_mappings or tpl.os_system_mappings:
+        lines.append("!" * 70)
+        lines.append(" SYSTEM-LEVEL CONFIGURATIONS (Requires -system flag to deploy)")
+        lines.append("!" * 70)
+        if tpl.system_mappings:
+            lines.append("  Universal System Mappings:")
+            for src, dest in sorted(tpl.system_mappings.items()):
+                lines.append(f"    {src:<22} -> {dest}")
+            lines.append("")
+        if tpl.os_system_mappings:
+            for os_name, sys_maps in sorted(tpl.os_system_mappings.items()):
+                active_marker = " [ACTIVE ON THIS HOST]" if os_name in (CURRENT_OS.value, "posix") else ""
+                lines.append(f"  [{os_name} System]{active_marker}")
+                for src, dest in sorted(sys_maps.items()):
+                    lines.append(f"    {src:<22} -> {dest}")
+            lines.append("")
 
     lines.append("=" * 70)
     return "\n".join(lines)
@@ -128,12 +139,10 @@ def edit_template(
     print(f"Opening {target_path} with {chosen_editor}...")
 
     try:
-        # Launch editor
         ret = subprocess.call([chosen_editor, str(target_path)])
         if ret != 0:
             print(f"Editor exited with return code {ret}")
         
-        # Validate syntax after editing
         try:
             Template.load(target_path)
             print(f"Template syntax validated successfully: {target_path}")

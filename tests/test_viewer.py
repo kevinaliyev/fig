@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fig.core.config import FigState
 from fig.core.template import Template
-from fig.core.viewer import format_template_view, resolve_template_target, view_template
+from fig.modules.viewer import format_template_view, resolve_template_target, view_template
 
 
 class TestViewer(unittest.TestCase):

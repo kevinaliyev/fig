@@ -1,7 +1,7 @@
 # FIG: Configuration & Dotfile Manager
 ### Architectural Blueprint, Implementation Roadmap & Audit Guide
 
-> **Status:** Phases 1, 2, 3 Complete & Builder/Viewer Integrated (27 Automated Unit & Integration Tests Passing)  
+> **Status:** All Phases (1, 2, 3, 4) Complete (31 Automated Unit & Integration Tests Passing)  
 > **Target Platforms:** POSIX (Linux, macOS) & Windows (10/11)  
 > **Runtime:** Python 3.11+ (Standard Library first, zero-mandatory external dependencies)
 
@@ -12,17 +12,30 @@
 `fig` is a fast, transparent, and auditable configuration and dotfile manager. It bridges the gap between raw symlink tools (like GNU Stow) and heavy declarative configuration managers (like Chezmoi or Nix).
 
 ### Core Pillars
-1. **Early OS Detection & Native Path Resolution**: Identifies the host operating system immediately at startup (`fig.core.platform`), translating environmental conventions (`$HOME`, `%USERPROFILE%`, `~/Documents`, `$XDG_CONFIG_HOME`, `%APPDATA%`) and native path semantics.
-2. **Interactive Template Builder (`fig build`)**: Interactive REPL that scans local repositories or remote GitHub repositories (`gh:user/dotfiles`), identifies nested directories (like `nvim`), respects `.config/` mirrors, and parses `pathspec.txt` files for non-standard tools.
-3. **Non-Standard App Standardization (`pathspec.txt`)**: Simple, standardized per-folder specification for arbitrary applications, removing guesswork and hardcoded heuristics.
-4. **POSIX Unification (`[os.posix.mappings]`)**: Rules shared across Linux and macOS can be declared under `[os.posix.mappings]` so they never need to be defined twice.
-5. **Template Viewer & Visual Editor (`fig view` / `fig edit`)**: Inspect colorized templates or edit them directly in `$EDITOR` (`nvim`, `vim`, `nano`, `notepad`) with automatic post-edit syntax validation.
-6. **Safety & Non-Destructive Overwrites**: Before any file or symlink is replaced, `fig` selectively captures existing target files into a timestamped, manifest-backed backup vault (`~/.fig/backups/`).
-7. **One-Command Bootstrap (`fig -bootstrap` / `fig bootstrap`)**: Run inside any cloned dotfiles repository to inspect the repo, back up collisions, deploy links, and register the repo as the machine's active template at `$HOME`.
-8. **Zero-Drift Idempotency (`fig` / `fig sync`)**: Subsequent runs synchronize against the active template. If no changes occurred, running `fig` is a safe, zero-impact no-op.
-9. **100% Reversible Rollback (`fig undo` / `fig revert`)**: Every deployment and temporary session is logged with a manifest. A user can cleanly revert any deployment back to its exact prior state.
-10. **Temporary Overrides ("Temp Mode")**: Easily turn a coworker's workstation into your environment with `fig temp <repo>`, and revert it completely back to their original state with `fig revert`.
-11. **Zero Dependencies**: 100% standard library Python 3.11+ so any machine can run it out of the box with zero setup hurdles.
+1. **Clear Scope Separation (User Dotfiles vs System Configurations)**:
+   - User dotfiles (`~/.zshrc`, `~/.config/nvim`, etc.) are managed by default with zero elevation requirements.
+   - System-level configurations (`/etc/`, systemd unit files, Windows system files) are **strictly isolated**. They are never auto-discovered or applied unless the user explicitly passes the `--system` / `-system` flag.
+2. **Explicit Pathspec Mandate for System Configurations**:
+   - Every system configuration MUST explicitly specify its exact destination path. No guesswork or auto-routing is permitted for system files.
+3. **Safety & Breaking Changes Guard**:
+   - Any operation involving system configurations displays a prominent warning detailing the risks to system stability and lists affected paths.
+   - Requires explicit user confirmation (`y/N`), which can be bypassed in automation with `-y` / `--yes`.
+4. **Elevation Protocol (UAC & sudo)**:
+   - Elevation is checked **only after** breaking-change warnings are confirmed.
+   - Windows: Re-launches in an elevated shell via UAC.
+   - POSIX: Re-launches using `sudo`.
+5. **System Redundancy Disaster-Recovery Vault**:
+   - In addition to the user's `~/.fig/backups/` vault, system-level modifications are archived in an independent, machine-wide redundancy vault:
+     - Windows: `%ProgramData%\fig\backups\` and `%ProgramData%\fig\logs\`
+     - Linux/macOS: `/var/backups/fig/` and `/var/log/fig/`
+   - Even if the user wipes their home directory or deletes Fig user files, system recovery remains fully intact.
+6. **Audit Trail Logging**:
+   - Every operation is recorded with ISO timestamps to `~/.fig/logs/fig.log` (and system operations to the redundancy system log).
+7. **Interactive Builder with `-system` Mode (`fig build -system`)**:
+   - The builder provides an overview, validates explicit pathspecs, displays warnings, and confirms system rules before writing them to `fig.toml`.
+8. **100% Reversible Rollback (`fig undo` / `fig undo --system`)**:
+   - Reverts modifications cleanly, restores original files, and deletes newly created links.
+9. **Zero Dependencies**: Pure Python 3.11+ standard library.
 
 ---
 
@@ -30,73 +43,112 @@
 
 ```toml
 [meta]
-name = "my-cross-platform-dotfiles"
+name = "my-complete-config"
 version = "1.0.0"
-description = "Personal cross-platform dotfiles"
+description = "Cross-platform dotfiles and optional system configurations"
 
 [settings]
 link_mode = "auto"              # "auto" | "symlink" | "hardlink" | "junction" | "copy"
-backup_on_collision = true      # Always backup conflicting files before link creation
-ignore = [".git", ".gitignore", "README.md", "fig.toml", "*.swp"]
+backup_on_collision = true      # Safeguard existing files
+ignore = [".git", "README.md", "fig.toml", "*.swp"]
 
-# Universal mappings (applied on any OS)
+# -------------------------------------------------------------
+# USER CONFIGURATION SECTION (Default, Unprivileged)
+# -------------------------------------------------------------
+[presets]
+include = ["git", "ssh", "starship"]
+
 [mappings]
 "git/.gitconfig"      = "~/.gitconfig"
 "ssh/config"          = "~/.ssh/config"
 "starship.toml"       = "~/.config/starship.toml"
 
-# POSIX-unified mappings (Linux & macOS)
 [os.posix.mappings]
 "zsh/.zshrc"          = "~/.zshrc"
 "nvim"                = "~/.config/nvim"
-"wezterm"             = "~/.config/wezterm"
 
-# Windows-specific mappings & presets
 [os.windows.mappings]
-"wezterm"                       = "~/.config/wezterm"
-"powershell/profile.ps1"        = "~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1"
-"nvim"                          = "%LOCALAPPDATA%/nvim"
+"nvim"                = "%LOCALAPPDATA%/nvim"
+"powershell/profile.ps1" = "~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1"
+
+# -------------------------------------------------------------
+# SYSTEM CONFIGURATION SECTION (Strictly requires --system)
+# Every entry MUST have an explicit destination pathspec.
+# -------------------------------------------------------------
+[system.mappings]
+"system/hosts"        = "/etc/hosts" # or C:\Windows\System32\drivers\etc\hosts on Windows
+
+[os.linux.system.mappings]
+"system/sysctl.d/99-custom.conf" = "/etc/sysctl.d/99-custom.conf"
+"system/systemd/myservice.service" = "/etc/systemd/system/myservice.service"
+
+[os.windows.system.mappings]
+"system/wsl.conf"     = "%ProgramData%/wsl/wsl.conf"
 ```
 
 ---
 
-## 3. Directory Hierarchy
+## 3. Architecture & Codebase Structure
+
+The codebase is organized into clean functional tiers:
 
 ```
-~/.fig/                              # User Fig State Directory ($FIG_HOME or ~/.fig)
-├── config.toml                      # Global Fig state (active template pointer, settings)
+fig/
+├── core/                            # Low-Level Engine Primitives & Security
+│   ├── config.py                    # State directories (~/.fig, %ProgramData%/fig)
+│   ├── platform.py                  # Early OS detection, POSIX unification, path translation
+│   ├── elevation.py                 # UAC/sudo elevation management, breaking-changes guard
+│   ├── logger.py                    # Audit logging (~/.fig/logs/fig.log, system logs)
+│   ├── linker.py                    # Atomic symlinks, junctions, hardlinks, deletions
+│   ├── backup.py                    # Selective collision backup vault & manifests
+│   ├── template.py                  # TOML parser, user & system section isolation
+│   └── engine.py                    # Deployment orchestrator & idempotency engine
+│
+├── modules/                         # High-Level Feature Subsystems
+│   ├── system.py                    # System configuration manager & redundancy vault
+│   ├── builder.py                   # Interactive REPL builder & scanner (-system supported)
+│   ├── scanner.py                   # Layout analyzer, nested configs, pathspec parser
+│   ├── viewer.py                    # Template visualizer & editor ($EDITOR / nvim)
+│   ├── profiles.py                  # Profiles & temporary takeover ("temp mode")
+│   ├── wizard.py                    # Starter questionnaire wizard
+│   └── git_clone.py                 # Git remote repository cloner
+│
+├── builtins/                        # Built-in Catalog
+│   └── catalog.py                   # Preset mappings for standard user tools
+│
+├── cli.py                           # CLI Interface & Command Dispatcher
+├── __init__.py
+└── __main__.py
+```
+
+### State & Storage Structure
+
+```
+~/.fig/                              # User Fig State Directory
+├── config.toml                      # Active template pointer & global settings
 ├── active_template.toml             # Mirrored active template
-├── backups/                         # Backup vault for collision recovery
-│   └── 20261107_120000_bootstrap/  # Timestamped backup session
-│       ├── manifest.json            # Deployment & backup manifest (source -> dest -> backup)
-│       └── files/                   # Exact copy of overridden files preserving relative tree
-├── profiles/                        # Named configuration profiles
+├── backups/                         # User collision backup vault
+│   └── YYYYMMDD_HHMMSS_<reason>/
+│       ├── manifest.json
+│       └── files/
+├── logs/                            # User audit logs
+│   └── fig.log
+├── profiles/                        # Saved named profiles
 ├── repos/                           # Cloned remote dotfile repositories
-└── sessions/                        # Temporary override / guest mode sessions
-    └── active_borrow.json
+└── sessions/                        # Temporary override sessions
+
+%ProgramData%\fig\ or /var/backups/fig/ # System Redundancy Disaster Vault
+├── backups/                         # Redundant system file backups
+│   └── YYYYMMDD_HHMMSS_system/
+│       ├── manifest.json
+│       └── files/
+└── logs/                            # System audit log
+    └── system_fig.log
 ```
 
 ---
 
-## 4. Component Breakdown
-
-| Component | Module | Responsibility |
-| :--- | :--- | :--- |
-| **Platform Abstraction** | `fig.core.platform` | Immediate OS detection (`windows`, `linux`, `macos`), POSIX unification, native path resolution (`~`, `$ENV`, `%ENV%`, Documents, AppData). |
-| **Repository Scanner & Pathspec** | `fig.core.scanner` | Analyzes repo layout, interprets `pathspec.txt`, detects nested directory configs (`nvim`, `wezterm`), mirrors `.config/`. |
-| **Template Builder** | `fig.core.builder` | Interactive REPL scanner, clean tabular preview, item exclusion toggling, custom path addition, and template assembly. |
-| **Git Remote Cloner** | `fig.core.git_clone` | Clones remote dotfile repos (`gh:user/dotfiles` or Git URLs) into `~/.fig/repos/`. |
-| **Template Viewer & Editor** | `fig.core.viewer` | Formats and colorizes templates for inspection; launches `$EDITOR` (`nvim`, `vim`, `notepad`) with validation. |
-| **CLI Dispatcher** | `fig.cli` | Argument parsing, command routing (`bootstrap`, `build`, `sync`, `check`, `preview`, `undo`, `history`, `temp`, `revert`, `view`, `edit`, `profile`). |
-| **Config / State** | `fig.core.config` | Manages `~/.fig`, reads/writes global configuration, tracks active template pointer. |
-| **Link Engine** | `fig.core.linker` | Atomic creation of symlinks/junctions/hardlinks, path resolution, permission error recovery (Windows Dev Mode vs Junctions/Hardlinks). |
-| **Backup Vault** | `fig.core.backup` | Selective collision backup (only backs up files being replaced), generates `manifest.json`, executes full rollback/restoration. |
-| **Orchestrator** | `fig.core.engine` | High-level operations: `bootstrap()`, `apply()`, `revert()`, `plan()` (dry run), `status()`. |
-| **Profile Manager** | `fig.core.profiles` | Switching between named templates/profiles, managing temporary "temp / guest" sessions. |
-
----
-
-## 5. Phased Implementation Status
+## 4. Phased Implementation Status
 
 ### Phase 1: Core Engine & Safety Foundation (COMPLETED)
 - [x] Architectural specification & blueprint (`PROJECT_MAP.md`).
@@ -104,13 +156,14 @@ ignore = [".git", ".gitignore", "README.md", "fig.toml", "*.swp"]
 - [x] POSIX unification (`[os.posix.mappings]`) shared across Linux and macOS.
 - [x] Cross-platform linking mechanism (`fig.core.linker`).
 - [x] Collision detection & Backup Engine (`fig.core.backup`).
-- [x] Template Engine with OS-Specific Declarations (`fig.core.template`).
+- [x] Audit Logging Engine (`fig.core.logger`).
+- [x] Template Engine with user/system isolation (`fig.core.template`).
 
 ### Phase 2: Builder, Pathspec & Refactored CLI (COMPLETED)
-- [x] Repository Scanner & `pathspec.txt` parser (`fig.core.scanner`).
-- [x] Interactive Template Builder REPL with exclusion toggling (`fig.core.builder`).
-- [x] Git remote repo cloning (`fig.core.git_clone`).
-- [x] Template Viewer & Visual Editor integration (`fig.core.viewer`).
+- [x] Repository Scanner & `pathspec.txt` parser (`fig.modules.scanner`).
+- [x] Interactive Template Builder REPL with exclusion toggling (`fig.modules.builder`).
+- [x] Git remote repo cloning (`fig.modules.git_clone`).
+- [x] Template Viewer & Visual Editor integration (`fig.modules.viewer`).
 - [x] `fig bootstrap` & `fig -bootstrap`.
 - [x] `fig` / `fig sync`: Routine synchronization against active template.
 - [x] `fig check`: Health, drift, collisions, and missing files inspection.
@@ -123,8 +176,11 @@ ignore = [".git", ".gitignore", "README.md", "fig.toml", "*.swp"]
 - [x] `fig temp <repo>`: Snapshot coworker's current state, deploy temporary dotfiles.
 - [x] `fig revert`: Instantly wipe temporary links and restore coworker's exact state.
 
-### Phase 4: System Configuration & Elevation (Planned Next Step)
-- [ ] Elevated system configuration mode (`fig --system` / `fig system`):
-  - Target system directories (`/etc/`, systemd unit files, Windows system configuration).
-  - Explicit sudo/UAC elevation checks.
-  - Elevated backup namespace (`/var/backups/fig/` or `~/.fig/system_backups/`).
+### Phase 4: System Configuration & Elevation (COMPLETED)
+- [x] System configuration module (`fig.modules.system`).
+- [x] Explicit pathspec enforcement for all system mappings.
+- [x] Breaking-changes warning banner & confirmation guard (`-y` / `--yes` flag).
+- [x] Elevation check & re-launch: UAC prompt on Windows / sudo on Linux.
+- [x] System redundancy disaster-recovery vault (`%ProgramData%\fig\backups\` / `/var/backups/fig/`).
+- [x] System rollback: `fig undo --system` / `fig -system undo`.
+- [x] System builder: `fig build --system`.

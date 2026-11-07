@@ -1,5 +1,6 @@
 """Fig Configuration and State Management.
-Handles paths, state directories, and active template pointers in ~/.fig.
+Handles paths, state directories, active template pointers in ~/.fig,
+and system-level redundancy vault paths in %ProgramData%/fig or /var/backups/fig.
 """
 
 from __future__ import annotations
@@ -13,12 +14,11 @@ from typing import Any, Dict, Optional
 if sys.version_info >= (3, 11):
     import tomllib
 else:
-    # Fallback if python < 3.11 (though 3.11+ is target)
     import tomli as tomllib  # type: ignore
 
 
 def get_fig_home() -> Path:
-    """Return the Fig state directory path.
+    """Return the user Fig state directory path.
     Priority: $FIG_HOME -> $XDG_CONFIG_HOME/fig -> ~/.fig
     """
     if "FIG_HOME" in os.environ:
@@ -30,23 +30,56 @@ def get_fig_home() -> Path:
     return (Path.home() / ".fig").resolve()
 
 
-class FigState:
-    """Encapsulates persistent state stored inside ~/.fig."""
+def get_system_fig_root() -> Path:
+    """Return the system-level redundancy directory path.
+    Priority: $FIG_SYSTEM_ROOT -> %ProgramData%/fig (Windows) -> /var/backups/fig (POSIX)
+    """
+    if "FIG_SYSTEM_ROOT" in os.environ:
+        return Path(os.environ["FIG_SYSTEM_ROOT"]).expanduser().resolve()
 
-    def __init__(self, fig_home: Optional[Path] = None):
+    if sys.platform.startswith("win"):
+        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        return Path(program_data) / "fig"
+    else:
+        return Path("/var/backups/fig")
+
+
+class FigState:
+    """Encapsulates persistent state stored inside ~/.fig and system redundancy vaults."""
+
+    def __init__(self, fig_home: Optional[Path] = None, system_root: Optional[Path] = None):
         self.home = fig_home or get_fig_home()
+        self.system_root = system_root or get_system_fig_root()
+
+        # User directories
         self.config_file = self.home / "config.toml"
         self.active_template_link = self.home / "active_template.toml"
         self.backups_dir = self.home / "backups"
+        self.logs_dir = self.home / "logs"
         self.profiles_dir = self.home / "profiles"
         self.sessions_dir = self.home / "sessions"
+        self.repos_dir = self.home / "repos"
 
-    def ensure_directories(self) -> None:
-        """Create necessary directories if they do not exist."""
+        # System redundancy directories
+        self.system_backups_dir = self.system_root / "backups"
+        self.system_logs_dir = self.system_root / "logs"
+
+    def ensure_directories(self, include_system: bool = False) -> None:
+        """Create necessary user directories (and system directories if elevated)."""
         self.home.mkdir(parents=True, exist_ok=True)
         self.backups_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.profiles_dir.mkdir(parents=True, exist_ok=True)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self.repos_dir.mkdir(parents=True, exist_ok=True)
+
+        if include_system:
+            try:
+                self.system_root.mkdir(parents=True, exist_ok=True)
+                self.system_backups_dir.mkdir(parents=True, exist_ok=True)
+                self.system_logs_dir.mkdir(parents=True, exist_ok=True)
+            except (PermissionError, OSError):
+                pass
 
     def load_config(self) -> Dict[str, Any]:
         """Load global Fig config from ~/.fig/config.toml."""
@@ -61,7 +94,6 @@ class FigState:
     def save_config(self, data: Dict[str, Any]) -> None:
         """Save configuration dictionary to ~/.fig/config.toml."""
         self.ensure_directories()
-        # Clean manual TOML serialization for standard library compatibility
         lines = []
         for key, val in data.items():
             if isinstance(val, dict):

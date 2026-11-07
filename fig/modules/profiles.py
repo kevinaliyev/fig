@@ -1,4 +1,4 @@
-"""Profile and Temporary Override ("Borrow Mode") Engine.
+"""Profile and Temporary Override ("Temp Mode") Engine.
 Enables multi-profile switching and temporary dotfile application with instant reversibility.
 """
 

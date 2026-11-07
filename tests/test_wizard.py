@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fig.core.wizard import run_interactive_wizard
+from fig.modules.wizard import run_interactive_wizard
 from fig.core.template import Template
 
 

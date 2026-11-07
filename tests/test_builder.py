@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fig.core.scanner import DiscoveredConfig
-from fig.core.builder import build_template_from_items, run_builder
+from fig.modules.scanner import DiscoveredConfig
+from fig.modules.builder import build_template_from_items, run_builder
 from fig.core.template import Template
 
 

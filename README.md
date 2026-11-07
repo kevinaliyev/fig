@@ -4,7 +4,7 @@
 
 `fig` maps source dotfile repositories to system destinations using declarative templates (`fig.toml`), cross-platform links (symlinks, junctions, hardlinks), zero-loss collision backups, and reversible profiles.
 
-[![Tests](https://img.shields.io/badge/tests-27%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-31%20passed-brightgreen.svg)]()
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)]()
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-blue.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)]()
@@ -13,154 +13,83 @@
 
 ## Key Highlights
 
-- **Early OS Detection**: Identifies operating system immediately at startup (`windows`, `linux`, `macos`) and resolves native paths, environment variables (`$HOME`, `%USERPROFILE%`, `%APPDATA%`, `~/Documents`), and filesystem conventions.
-- **Interactive Template Builder (`fig build`)**: Interactive REPL that scans any local repository or remote GitHub repo (`gh:user/dotfiles`), detects directory trees and nested configs (like `nvim`), reads `pathspec.txt` for non-standard applications, presents a clean table, and lets you toggle exclusions and edit targets before building `fig.toml`.
-- **Non-Standard App Standardization (`pathspec.txt`)**: For any custom or non-standard application, simply place a `pathspec.txt` inside its folder (e.g. `dotfiles/myapp/pathspec.txt`). Fig reads it directly without guessing.
-- **POSIX Unification (`[os.posix.mappings]`)**: Rules shared across Linux and macOS (like Bash or Zsh configs) can be declared under `[os.posix.mappings]`, eliminating duplicate rules.
-- **Visual Template Viewer & Editor (`fig view` / `fig edit`)**: Inspect your active or catalog templates in a clean, colorized layout or open them directly in your preferred editor (`$EDITOR`, `nvim`, `vim`, `notepad`).
-- **One-Command Bootstrap (`fig -bootstrap` or `fig bootstrap`)**: Run inside any cloned dotfiles repo. It backs up existing configs, deploys links, and registers the repo as the machine's active template at `$HOME`.
-- **Selective Safety Vault**: Before replacing *any* existing file or link, `fig` selectively archives colliding files into a timestamped vault (`~/.fig/backups/`) with a JSON manifest.
-- **100% Reversible Rollback (`fig undo` / `fig revert`)**: Every link operation is logged. Revert any deployment or temporary session back to its exact prior state with a single command.
-- **Zero-Drift Idempotency (`fig` / `fig sync`)**: Running `fig` repeatedly synchronizes against the active template. If nothing changed, it is a safe no-op.
-- **Temporary Overrides (`fig temp` / `fig revert`)**: Temporarily apply your dotfiles on a coworker's or shared computer and instantly revert everything back to their exact previous state when finished.
+- **Scope Separation**: Clear separation between everyday user dotfiles (unprivileged) and system-level configuration files (`/etc/`, systemd, Windows system files). System files are **never** touched unless you explicitly pass `--system`.
+- **Breaking Changes Safety Guard**: Modifying system files triggers an explicit breaking changes warning detailing affected paths and risks to system stability. Confirmation (`y/N`) is mandatory (skippable with `-y` in automation).
+- **Elevation Protocol**: If you aren't in an elevated shell when applying system configs, Fig prompts for UAC elevation on Windows or `sudo` on Linux/macOS (only *after* you have confirmed the breaking-change warning).
+- **System Redundancy Disaster Vault**: System changes are saved to an independent system-level redundancy vault (`%ProgramData%\fig\backups\` on Windows or `/var/backups/fig/` on Linux/macOS) in addition to user backups, ensuring disaster recoverability even if user files are deleted.
+- **Mandatory System Pathspecs**: Every system configuration entry must explicitly define its destination path. No auto-guessing for system files.
+- **Audit Logging**: Every operation is logged with ISO timestamps in `~/.fig/logs/fig.log` and system redundancy logs.
+- **Interactive Template Builder (`fig build`)**: Interactive REPL that scans local repositories or remote GitHub repos (`gh:user/dotfiles`), detects directory trees, reads `pathspec.txt`, and lets you toggle exclusions before generating `fig.toml`.
+- **POSIX Unification (`[os.posix.mappings]`)**: Rules shared across Linux and macOS can be declared under `[os.posix.mappings]`, eliminating duplicate rules.
+- **100% Reversible Rollback (`fig undo` / `fig undo --system`)**: Revert any deployment or temporary session back to its exact prior state with a single command.
 - **Zero Dependencies**: Written entirely in standard library Python (Python 3.11+).
 
 ---
 
 ## Quickstart
 
-### 1. Build a Template for Your Dotfiles
-
-If you already have a dotfiles directory or cloned repo, run the interactive builder:
+### 1. User Dotfiles (Default Mode)
 
 ```bash
+# Build template interactively
 fig build
-```
 
-Or build directly from GitHub:
-```bash
+# Or clone from GitHub & build
 fig build gh:yourusername/dotfiles
-```
 
-The builder will:
-1. Scan your directory tree (detecting `.config/` mirrors, nested `nvim` setups, stow-style folders, and `pathspec.txt` files).
-2. Present a clean, readable table of discovered applications.
-3. Allow you to interactively toggle exclusions (`toggle 2`), edit paths (`edit 3`), or add custom apps.
-4. Generate a clean `fig.toml` template.
-
-### 2. Bootstrapping on a Fresh Machine
-
-Clone your dotfiles repository and run `fig -bootstrap`:
-
-```bash
-git clone https://github.com/yourusername/dotfiles.git ~/dotfiles
-cd ~/dotfiles
+# Bootstrap dotfiles (backs up collisions & activates template)
 fig -bootstrap
-```
 
-What this does:
-1. Detects `fig.toml` (or launches the builder if missing).
-2. Computes collisions on your filesystem.
-3. Archives conflicting files to `~/.fig/backups/<timestamp>_bootstrap/`.
-4. Deploys symlinks/hardlinks natively to your system.
-5. Registers this repository as the machine's active template at `~/.fig/`.
-
-### 3. Routine Syncing
-
-Once bootstrapped, run `fig` (or `fig sync`) from anywhere:
-
-```bash
+# Routine idempotent synchronization
 fig
 ```
 
-This enforces your active template idempotently. If files are already linked, nothing is modified.
+### 2. System Configuration Mode (`--system` / `-system`)
 
-### 4. Viewing & Editing Templates
+System configurations must be explicitly declared in `fig.toml` under `[system.mappings]` or `[os.<name>.system.mappings]`:
 
-View the active template:
-```bash
-fig view
+```toml
+[system.mappings]
+"system/hosts" = "/etc/hosts" # or C:\Windows\System32\drivers\etc\hosts on Windows
+
+[os.linux.system.mappings]
+"system/sysctl.d/99-custom.conf" = "/etc/sysctl.d/99-custom.conf"
 ```
 
-Edit the active template in `$EDITOR` (e.g. `nvim`, `vim`, or `notepad`):
-```bash
-fig edit
-```
-
-List all templates & profiles:
-```bash
-fig template list
-```
-
-### 5. Checking Status & Health
+To apply system configurations:
 
 ```bash
-fig check
+fig -system
+# or: fig apply --system
 ```
 
-Example output:
-```
-Platform:        Windows
-Active Template: C:\Users\user\dotfiles\fig.toml
-Repository Root: C:\Users\user\dotfiles
+What happens:
+1. Fig checks for system configurations and displays a prominent **BREAKING CHANGES WARNING** with the list of affected system paths.
+2. Prompts for confirmation: `Are you sure you want to proceed with system modifications? [y/N]`.
+3. Checks elevation: If not in an elevated shell, prompts to elevate (UAC on Windows / `sudo` on Linux).
+4. Saves a disaster-recovery backup in the system redundancy vault (`%ProgramData%\fig\backups\` or `/var/backups/fig/`).
+5. Atomically deploys the links.
 
-Target Statuses:
-  [OK]       C:\Users\user\.gitconfig -> C:\Users\user\dotfiles\.gitconfig
-  [OK]       C:\Users\user\Documents\PowerShell\Microsoft.PowerShell_profile.ps1
-  [OK]       C:\Users\user\AppData\Local\nvim -> C:\Users\user\dotfiles\nvim
-  [MISSING]  C:\Users\user\.config\starship.toml
-```
-
-### 6. Undoing / Rolling Back Changes
-
-View backup history:
+To skip the warning prompt in automation or scripts, pass `-y`:
 ```bash
-fig history
+fig -system -y
 ```
 
-Restore system back to prior state:
-```bash
-fig undo
-```
-
-### 7. Temporary Takeover on Coworker's Machine
+### 3. Reviewing System Specs in Builder
 
 ```bash
-# Temporarily apply your dotfiles (snapshots coworker's current state)
-fig temp ~/my-dotfiles
-
-# ... do your work ...
-
-# Instantly restore coworker's original state and clean up links
-fig revert
+fig build --system
 ```
 
----
+Scans for folders with `pathspec.txt` containing system scopes or allows manual entry of explicit system pathspecs, provides an overview, and saves to `fig.toml`.
 
-## Non-Standard Application Standardization (`pathspec.txt`)
+### 4. Undoing / Rolling Back System Changes
 
-For any application that doesn't follow standard `.config` or `$HOME` conventions, place a `pathspec.txt` inside its folder:
-
-```
-dotfiles/
-├── my_weird_tool/
-│   ├── config.json
-│   └── pathspec.txt
+```bash
+fig undo --system
 ```
 
-In `pathspec.txt`, specify either a single target or platform-specific targets:
-
-```ini
-# Single universal target:
-~/.local/share/my_weird_tool
-
-# Or platform-specific targets:
-windows = %APPDATA%/my_weird_tool
-posix   = ~/.local/share/my_weird_tool
-macos   = ~/Library/Application Support/my_weird_tool
-```
-
-`fig build` automatically recognizes `pathspec.txt` and routes the folder accordingly.
+Restores system files from the system redundancy disaster recovery vault.
 
 ---
 
@@ -168,32 +97,35 @@ macos   = ~/Library/Application Support/my_weird_tool
 
 ```toml
 [meta]
-name = "my-cross-platform-dotfiles"
+name = "my-complete-config"
 version = "1.0.0"
-description = "My daily driver dotfiles"
 
 [settings]
 link_mode = "auto"              # "auto" | "symlink" | "hardlink" | "junction" | "copy"
-backup_on_collision = true      # Safeguard existing files
-ignore = [".git", "README.md", "fig.toml", "private/*"]
+backup_on_collision = true
 
-# Universal mappings across all platforms
+# User Dotfiles Section
 [mappings]
 "git/.gitconfig"      = "~/.gitconfig"
 "ssh/config"          = "~/.ssh/config"
-"starship.toml"       = "~/.config/starship.toml"
 
-# POSIX-unified mappings (applies to both Linux and macOS)
 [os.posix.mappings]
 "zsh/.zshrc"          = "~/.zshrc"
 "nvim"                = "~/.config/nvim"
-"wezterm"             = "~/.config/wezterm"
 
-# Windows-specific mappings
 [os.windows.mappings]
 "nvim"                = "%LOCALAPPDATA%/nvim"
 "powershell/profile.ps1" = "~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1"
-"wezterm"             = "~/.config/wezterm"
+
+# System Configuration Section (Strictly requires --system)
+[system.mappings]
+"system/hosts"        = "/etc/hosts"
+
+[os.linux.system.mappings]
+"system/sysctl.conf"  = "/etc/sysctl.d/99-custom.conf"
+
+[os.windows.system.mappings]
+"system/wsl.conf"     = "%ProgramData%/wsl/wsl.conf"
 ```
 
 ---
@@ -202,18 +134,21 @@ ignore = [".git", "README.md", "fig.toml", "private/*"]
 
 | Command | Aliases | Description |
 | :--- | :--- | :--- |
-| `fig` / `fig sync` | `apply` | Synchronize system files against active template. |
+| `fig` / `fig sync` | `apply` | Synchronize user dotfiles against active template. |
+| `fig -system` | `fig sync --system` | Apply system configurations (triggers warning & elevation check). |
 | `fig -bootstrap [DIR]` | `fig bootstrap` | Deploy dotfiles from `DIR`, back up collisions, and set as active. |
-| `fig build [DIR\|URL]` | — | Interactive REPL scanner to build a new template from local dir or GitHub repo. |
-| `fig view [TARGET]` | `template view` | View formatted inspection of active or specified template. |
-| `fig edit [TARGET]` | `template edit` | Open template in visual editor (`$EDITOR`, `nvim`, `notepad`). |
-| `fig check` | `status` | Check status of all managed target files (linked, drifted, collision, missing). |
+| `fig build [DIR\|URL]` | — | Interactive REPL scanner to build user dotfile templates. |
+| `fig build --system` | — | Review and assemble system configuration specifications. |
+| `fig check` | `status` | Check health and link status of managed target files. |
 | `fig preview` | `diff`, `-n` | Preview planned actions without modifying filesystem. |
-| `fig undo [ID]` | `rollback`, `restore` | Restore replaced files and clean up newly added links. |
-| `fig history` | `backups` | List all historical collision backup sessions in `~/.fig/backups/`. |
+| `fig undo [ID]` | `rollback`, `restore` | Restore replaced user files and remove newly added links. |
+| `fig undo --system` | — | Restore system configuration from redundancy vault. |
+| `fig history` | `backups` | List historical user backup sessions. |
+| `fig history --system` | — | List historical system redundancy backups. |
 | `fig temp <DIR>` | `guest`, `borrow` | Temporarily deploy dotfiles for a work session. |
 | `fig revert` | `unborrow` | Revert temporary session and restore original machine state. |
-| `fig template list` | — | List all saved templates and active template. |
+| `fig view [TARGET]` | `template view` | View formatted inspection of template (including system section). |
+| `fig edit [TARGET]` | `template edit` | Open template in visual editor (`$EDITOR`, `nvim`, `notepad`). |
 | `fig profile switch <name>` | — | Switch active configuration to a named profile and sync. |
 
 ---

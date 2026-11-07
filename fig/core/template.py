@@ -1,6 +1,7 @@
 """Template Engine for Fig.
 Parses, validates, auto-generates, and resolves mapping templates (fig.toml)
-with full OS-specific path declarations and platform awareness.
+with support for user dotfiles, OS-specific path declarations, and explicitly
+segregated system-level configuration specifications.
 """
 
 from __future__ import annotations
@@ -50,6 +51,8 @@ class Template:
         presets: Optional[List[str]] = None,
         os_mappings: Optional[Dict[str, Dict[str, str]]] = None,
         os_presets: Optional[Dict[str, List[str]]] = None,
+        system_mappings: Optional[Dict[str, str]] = None,
+        os_system_mappings: Optional[Dict[str, Dict[str, str]]] = None,
         source_file: Optional[Path] = None,
     ):
         self.name = name
@@ -60,13 +63,25 @@ class Template:
         self.ignore_patterns = ignore_patterns or [".git", ".gitignore", "README.md", "fig.toml", ".fig.toml"]
         self.mappings = mappings or {}
         self.presets = presets or []
-        self.os_mappings = os_mappings or {}  # e.g. {"windows": {...}, "linux": {...}}
-        self.os_presets = os_presets or {}    # e.g. {"windows": [...], "linux": [...]}
+        self.os_mappings = os_mappings or {}        # e.g. {"windows": {...}, "linux": {...}}
+        self.os_presets = os_presets or {}          # e.g. {"windows": [...], "linux": [...]}
+        self.system_mappings = system_mappings or {} # [system.mappings]
+        self.os_system_mappings = os_system_mappings or {} # [os.windows.system.mappings]
         self.source_file = source_file
+
+    @property
+    def has_system_mappings(self) -> bool:
+        """Return True if template contains any system-level configuration rules."""
+        if self.system_mappings:
+            return True
+        for os_k, maps in self.os_system_mappings.items():
+            if maps:
+                return True
+        return False
 
     @classmethod
     def load(cls, path: Path) -> Template:
-        """Load template from a TOML file with OS-specific support."""
+        """Load template from a TOML file with OS-specific and system-level support."""
         with open(path, "rb") as f:
             data = tomllib.load(f)
 
@@ -77,30 +92,47 @@ class Template:
 
         os_mappings: Dict[str, Dict[str, str]] = {}
         os_presets: Dict[str, List[str]] = {}
+        os_system_mappings: Dict[str, Dict[str, str]] = {}
 
-        # 1. Look for [os.<name>.mappings] and [os.<name>.presets]
+        # 1. Look for [os.<name>] sections
         os_blocks = data.get("os", {})
         for os_key, os_data in os_blocks.items():
             if isinstance(os_data, dict):
+                # User mappings
                 if "mappings" in os_data and isinstance(os_data["mappings"], dict):
                     os_mappings[os_key.lower()] = os_data["mappings"]
                 elif "include" in os_data:
-                    # e.g. os.windows.include = ["powershell"]
                     os_presets[os_key.lower()] = os_data["include"]
                 else:
-                    # Direct key-value mappings inside [os.<name>]
                     direct_mappings = {k: v for k, v in os_data.items() if isinstance(v, str)}
                     if direct_mappings:
                         os_mappings[os_key.lower()] = direct_mappings
                 
+                # Presets
                 if "presets" in os_data and isinstance(os_data["presets"], dict):
                     os_presets[os_key.lower()] = os_data["presets"].get("include", [])
 
-        # 2. Extract any inline OS mappings declared inside [mappings]
+                # System mappings inside [os.<name>.system.mappings]
+                if "system" in os_data and isinstance(os_data["system"], dict):
+                    sys_block = os_data["system"]
+                    if "mappings" in sys_block and isinstance(sys_block["mappings"], dict):
+                        os_system_mappings[os_key.lower()] = sys_block["mappings"]
+                    else:
+                        os_system_mappings[os_key.lower()] = {k: v for k, v in sys_block.items() if isinstance(v, str)}
+
+        # 2. Extract universal system mappings from [system.mappings] or [system]
+        system_mappings: Dict[str, str] = {}
+        raw_system = data.get("system", {})
+        if isinstance(raw_system, dict):
+            if "mappings" in raw_system and isinstance(raw_system["mappings"], dict):
+                system_mappings = raw_system["mappings"]
+            else:
+                system_mappings = {k: v for k, v in raw_system.items() if isinstance(v, str)}
+
+        # 3. Extract universal user mappings declared inside [mappings]
         universal_mappings: Dict[str, Union[str, Dict[str, str]]] = {}
         for src_key, target_val in raw_mappings.items():
             if isinstance(target_val, dict):
-                # e.g. "wezterm.lua" = { windows = "...", linux = "..." }
                 for os_k, dest in target_val.items():
                     os_mappings.setdefault(os_k.lower(), {})[src_key] = dest
             else:
@@ -117,6 +149,8 @@ class Template:
             presets=presets,
             os_mappings=os_mappings,
             os_presets=os_presets,
+            system_mappings=system_mappings,
+            os_system_mappings=os_system_mappings,
             source_file=path.resolve(),
         )
 
@@ -138,12 +172,14 @@ class Template:
         lines.append(f"ignore = [{', '.join(quoted_ignores)}]")
         lines.append("")
 
+        # Universal user presets
         if self.presets:
             lines.append("[presets]")
             quoted_presets = [f'"{p}"' for p in self.presets]
             lines.append(f"include = [{', '.join(quoted_presets)}]")
             lines.append("")
 
+        # Universal user mappings
         if self.mappings:
             lines.append("[mappings]")
             for src, dest in self.mappings.items():
@@ -152,7 +188,7 @@ class Template:
                     lines.append(f'"{src}" = "{clean_dest}"')
             lines.append("")
 
-        # Save OS-specific sections
+        # OS-specific user mappings
         for os_name, os_map in sorted(self.os_mappings.items()):
             if os_map:
                 lines.append(f"[os.{os_name}.mappings]")
@@ -161,11 +197,29 @@ class Template:
                     lines.append(f'"{src}" = "{clean_dest}"')
                 lines.append("")
 
+        # OS-specific presets
         for os_name, presets in sorted(self.os_presets.items()):
             if presets:
                 lines.append(f"[os.{os_name}.presets]")
                 quoted = [f'"{p}"' for p in presets]
                 lines.append(f"include = [{', '.join(quoted)}]")
+                lines.append("")
+
+        # Universal system mappings
+        if self.system_mappings:
+            lines.append("[system.mappings]")
+            for src, dest in sorted(self.system_mappings.items()):
+                clean_dest = str(dest).replace("\\", "/")
+                lines.append(f'"{src}" = "{clean_dest}"')
+            lines.append("")
+
+        # OS-specific system mappings
+        for os_name, sys_map in sorted(self.os_system_mappings.items()):
+            if sys_map:
+                lines.append(f"[os.{os_name}.system.mappings]")
+                for src, dest in sorted(sys_map.items()):
+                    clean_dest = str(dest).replace("\\", "/")
+                    lines.append(f'"{src}" = "{clean_dest}"')
                 lines.append("")
 
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -184,14 +238,39 @@ class Template:
         self,
         repo_root: Path,
         target_os: Optional[OperatingSystem] = None,
+        is_system: bool = False,
     ) -> List[Tuple[Path, Path]]:
         """Compute the complete list of (source_path, destination_path) pairs for current OS.
-        Prioritizes OS-specific mappings and presets over universal defaults.
+        If is_system is False (default): returns ONLY user dotfiles. System mappings are strictly excluded.
+        If is_system is True: returns ONLY system-level mappings. Explicit pathspecs are mandatory.
         """
         active_os = target_os or CURRENT_OS
         repo_root = repo_root.resolve()
         resolved: Dict[str, Tuple[Path, Path]] = {}
 
+        if is_system:
+            # SYSTEM CONFIGURATION MODE
+            # 1. Universal system mappings
+            for rel_src, target_expr in self.system_mappings.items():
+                if not target_expr or not str(target_expr).strip():
+                    raise ValueError(f"System mapping for '{rel_src}' is missing an explicit pathspec destination.")
+                src_path = repo_root / rel_src
+                dest_path = resolve_native_path(target_expr)
+                resolved[str(dest_path.resolve())] = (src_path, dest_path)
+
+            # 2. OS-specific system mappings (takes precedence)
+            for os_key, os_sys_map in self.os_system_mappings.items():
+                if matches_current_os(os_key, target_os=active_os):
+                    for rel_src, target_expr in os_sys_map.items():
+                        if not target_expr or not str(target_expr).strip():
+                            raise ValueError(f"System mapping for '{rel_src}' ({os_key}) is missing an explicit pathspec destination.")
+                        src_path = repo_root / rel_src
+                        dest_path = resolve_native_path(target_expr)
+                        resolved[str(dest_path.resolve())] = (src_path, dest_path)
+
+            return list(resolved.values())
+
+        # USER CONFIGURATION MODE
         # 1. Combine universal presets with presets targeting the active OS
         active_presets = list(self.presets)
         for os_key, presets_list in self.os_presets.items():
@@ -207,7 +286,7 @@ class Template:
                 dest_path = resolve_native_path(target_expr)
                 resolved[str(dest_path.resolve())] = (src_path, dest_path)
 
-        # 2. Universal mappings
+        # 2. Universal user mappings
         for rel_src, target_val in self.mappings.items():
             if self.is_ignored(rel_src):
                 continue
@@ -216,7 +295,7 @@ class Template:
                 dest_path = resolve_native_path(target_val)
                 resolved[str(dest_path.resolve())] = (src_path, dest_path)
 
-        # 3. OS-specific mappings for active OS (takes precedence)
+        # 3. OS-specific user mappings (takes precedence)
         for os_key, os_map in self.os_mappings.items():
             if matches_current_os(os_key, target_os=active_os):
                 for rel_src, target_expr in os_map.items():
@@ -224,7 +303,6 @@ class Template:
                         continue
                     src_path = repo_root / rel_src
                     dest_path = resolve_native_path(target_expr)
-                    # If this destination was mapped, or if src was mapped differently, update
                     resolved[str(dest_path.resolve())] = (src_path, dest_path)
 
         return list(resolved.values())

@@ -35,7 +35,6 @@ def normalize_git_url(target: str) -> Tuple[str, str]:
         url = f"https://github.com/{user}/{repo}.git"
         return url, repo
 
-    # Extract repo name from URL
     name = clean.rstrip("/").split("/")[-1]
     if name.endswith(".git"):
         name = name[:-4]
@@ -57,7 +56,6 @@ def clone_remote_repo(
         clone_dest = dest_dir.resolve()
 
     if clone_dest.exists():
-        # Check if already cloned
         if (clone_dest / ".git").is_dir():
             print(f"Repository already cloned at: {clone_dest}")
             return clone_dest
