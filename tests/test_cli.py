@@ -1,4 +1,4 @@
-"""CLI End-to-End Tests."""
+"""CLI End-to-End Tests with Refactored Command Names."""
 
 import io
 import os
@@ -10,7 +10,6 @@ from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
 
 from fig.cli import main
-from fig.core.config import FigState
 
 
 class TestCLI(unittest.TestCase):
@@ -54,7 +53,7 @@ name = "cli-test"
             self.assertEqual(cm.exception.code, 0)
         self.assertIn("fig 0.1.0", buf.getvalue())
 
-    def test_cli_bootstrap_apply_status_and_restore(self):
+    def test_cli_bootstrap_sync_check_and_undo(self):
         # 1. Bootstrap
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -63,45 +62,53 @@ name = "cli-test"
         self.assertTrue(self.dest_ini.exists())
         self.assertEqual(self.dest_ini.read_text(encoding="utf-8"), "color=blue")
 
-        # 2. Status
+        # 2. Check (replaces status)
         buf = io.StringIO()
         with redirect_stdout(buf):
-            ret = main(["status"])
+            ret = main(["check"])
             self.assertEqual(ret, 0)
         self.assertIn("[OK]", buf.getvalue())
 
-        # 3. Apply without arguments (should apply active template)
+        # 3. Preview (replaces diff)
         buf = io.StringIO()
         with redirect_stdout(buf):
-            ret = main([])
+            ret = main(["preview"])
+            self.assertEqual(ret, 0)
+        self.assertIn("Preview Plan", buf.getvalue())
+
+        # 4. Sync (or bare 'fig')
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ret = main(["sync"])
             self.assertEqual(ret, 0)
         self.assertIn("Already synchronized", buf.getvalue())
 
-        # 4. Backups list
+        # 5. History (replaces backups)
         buf = io.StringIO()
         with redirect_stdout(buf):
-            ret = main(["backups"])
+            ret = main(["history"])
             self.assertEqual(ret, 0)
         self.assertIn("Session ID:", buf.getvalue())
 
-        # 5. Restore
+        # 6. Undo (replaces restore)
         buf = io.StringIO()
         with redirect_stdout(buf):
-            ret = main(["restore"])
+            ret = main(["undo"])
             self.assertEqual(ret, 0)
         self.assertFalse(self.dest_ini.exists())
 
-    def test_cli_borrow_and_unborrow(self):
+    def test_cli_temp_and_revert(self):
+        # Temp (replaces borrow)
         buf = io.StringIO()
         with redirect_stdout(buf):
-            ret = main(["borrow", str(self.repo_dir)])
+            ret = main(["temp", str(self.repo_dir)])
             self.assertEqual(ret, 0)
         self.assertTrue(self.dest_ini.exists())
 
-        # Now unborrow
+        # Revert (replaces unborrow)
         buf = io.StringIO()
         with redirect_stdout(buf):
-            ret = main(["unborrow"])
+            ret = main(["revert"])
             self.assertEqual(ret, 0)
         self.assertFalse(self.dest_ini.exists())
 

@@ -1,5 +1,5 @@
 """Command Line Interface for Fig.
-Supports both subcommand syntax ('fig bootstrap') and classic flag syntax ('fig --bootstrap').
+Fast, auditable user & system dotfile and configuration manager.
 """
 
 from __future__ import annotations
@@ -11,20 +11,22 @@ from pathlib import Path
 from typing import List, Optional
 
 from fig import __version__
+from fig.core.platform import CURRENT_OS
 from fig.core.config import FigState, get_fig_home
 from fig.core.engine import FigEngine, EngineResult
 from fig.core.backup import list_all_backups
 from fig.core.profiles import ProfileManager, BorrowSessionManager
-from fig.core.template import Template, generate_default_template
+from fig.core.wizard import run_interactive_wizard
 
 
 def print_banner() -> None:
-    print(f"fig v{__version__} - Dotfile and Configuration Manager\n")
+    print(f"fig v{__version__} ({CURRENT_OS.value}) — Configuration & Dotfile Manager\n")
 
 
 def print_engine_result(result: EngineResult) -> None:
-    action_title = "Dry Run Plan" if result.dry_run else f"Action: {result.action.upper()}"
+    action_title = "Preview Plan (Dry Run)" if result.dry_run else f"Action: {result.action.upper()}"
     print(f"\n--- {action_title} [{result.template_name}] ---")
+    print(f"Platform:   {CURRENT_OS.value.capitalize()}")
     print(f"Repository: {result.repo_root}")
 
     if result.backup_id:
@@ -64,22 +66,23 @@ def cmd_bootstrap(engine: FigEngine, path: Path, dry_run: bool) -> int:
         return 1
 
 
-def cmd_apply(engine: FigEngine, dry_run: bool) -> int:
+def cmd_sync(engine: FigEngine, dry_run: bool) -> int:
     try:
         res = engine.apply(dry_run=dry_run)
         print_engine_result(res)
         return 0 if res.is_success else 1
     except Exception as e:
-        print(f"Error during apply: {e}", file=sys.stderr)
+        print(f"Error during sync: {e}", file=sys.stderr)
         return 1
 
 
-def cmd_status(engine: FigEngine) -> int:
+def cmd_check(engine: FigEngine) -> int:
     info = engine.status()
     if "error" in info:
         print(info["error"])
         return 1
 
+    print(f"Platform:        {CURRENT_OS.value.capitalize()}")
     print(f"Active Template: {info['active_template']}")
     print(f"Repository Root: {info['repo_root']}\n")
 
@@ -106,10 +109,10 @@ def cmd_status(engine: FigEngine) -> int:
     return 0
 
 
-def cmd_restore(engine: FigEngine, backup_id: Optional[str]) -> int:
+def cmd_undo(engine: FigEngine, backup_id: Optional[str]) -> int:
     try:
         restored, removed_new = engine.restore_backup(backup_id)
-        print("Restoration complete.")
+        print("Undo / Rollback complete.")
         if restored:
             print(f"\nRestored {len(restored)} original file(s):")
             for r in restored:
@@ -120,17 +123,17 @@ def cmd_restore(engine: FigEngine, backup_id: Optional[str]) -> int:
                 print(f"  [REMOVED]  {rm}")
         return 0
     except Exception as e:
-        print(f"Error during restore: {e}", file=sys.stderr)
+        print(f"Error during undo: {e}", file=sys.stderr)
         return 1
 
 
-def cmd_backups(engine: FigEngine) -> int:
+def cmd_history(engine: FigEngine) -> int:
     backups = list_all_backups(engine.state.backups_dir)
     if not backups:
-        print("No backups found in Fig vault.")
+        print("No backup history found in Fig vault.")
         return 0
 
-    print(f"Fig Backup Vault ({engine.state.backups_dir}):\n")
+    print(f"Fig Backup History ({engine.state.backups_dir}):\n")
     for b in backups:
         print(f"  Session ID: {b['id']}")
         print(f"    Date:     {b['timestamp']}")
@@ -140,21 +143,11 @@ def cmd_backups(engine: FigEngine) -> int:
     return 0
 
 
-def cmd_init(target_dir: Path) -> int:
-    out_file = target_dir / "fig.toml"
-    if out_file.exists():
-        print(f"Template already exists at {out_file}", file=sys.stderr)
-        return 1
-    tpl = generate_default_template(target_dir)
-    tpl.save(out_file)
-    print(f"Created template at {out_file}")
-    return 0
-
-
-def cmd_borrow(engine: FigEngine, repo_dir: Path) -> int:
+def cmd_temp(engine: FigEngine, repo_dir: Path) -> int:
+    """Temporarily deploy dotfiles for a work session on a coworker/shared machine."""
     bm = BorrowSessionManager(engine.state)
     if bm.has_active_borrow():
-        print("An active borrow session already exists. Run 'fig unborrow' first.", file=sys.stderr)
+        print("An active temporary session already exists. Run 'fig revert' first.", file=sys.stderr)
         return 1
 
     prev_active = engine.state.get_active_template_path()
@@ -166,21 +159,22 @@ def cmd_borrow(engine: FigEngine, repo_dir: Path) -> int:
             backup_id=res.backup_id,
             prev_active_template=str(prev_active) if prev_active else None,
         )
-        print("Temporary 'borrow' mode active! Run 'fig unborrow' or 'fig revert' when finished.")
+        print("Temporary override active! Run 'fig revert' when finished to restore original state.")
         return 0
     return 1
 
 
-def cmd_unborrow(engine: FigEngine) -> int:
+def cmd_revert(engine: FigEngine) -> int:
+    """Revert temporary session and restore original machine state."""
     bm = BorrowSessionManager(engine.state)
     info = bm.get_borrow_info()
     if not info:
-        print("No active borrow session found.")
+        print("No active temporary session found to revert.")
         return 0
 
     backup_id = info.get("backup_id")
     print(f"Reverting temporary session (backup ID: {backup_id})...")
-    res_code = cmd_restore(engine, backup_id)
+    res_code = cmd_undo(engine, backup_id)
     if res_code == 0:
         prev_active = info.get("prev_active_template")
         if prev_active and Path(prev_active).exists():
@@ -194,10 +188,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
-    # Handle custom flags like -bootstrap or --bootstrap at top-level
     parser = argparse.ArgumentParser(
         prog="fig",
-        description="Fig: Fast, Auditable Dotfile and Configuration Manager",
+        description=f"Fig v{__version__} ({CURRENT_OS.value}) — Auditable Configuration & Dotfile Manager",
     )
     parser.add_argument("-v", "--version", action="version", version=f"fig {__version__}")
     parser.add_argument(
@@ -208,82 +201,85 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Bootstrap dotfiles from DIR (default: current directory)",
     )
     parser.add_argument(
-        "--dry-run", "-n",
+        "--preview", "--dry-run", "-n",
+        dest="preview",
         action="store_true",
-        help="Simulate actions without modifying filesystem",
+        help="Preview changes without modifying filesystem",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 
-    # bootstrap subcommand
-    sp_boot = subparsers.add_parser("bootstrap", help="Deploy dotfiles from repository")
-    sp_boot.add_argument("path", nargs="?", default=".", help="Path to dotfiles directory")
-    sp_boot.add_argument("--dry-run", "-n", action="store_true", help="Preview changes")
+    # bootstrap
+    sp_boot = subparsers.add_parser("bootstrap", help="Deploy dotfiles from repository & register as active")
+    sp_boot.add_argument("path", nargs="?", default=".", help="Path to dotfiles directory (default: .)")
+    sp_boot.add_argument("--preview", "-n", action="store_true", help="Preview changes")
 
-    # apply subcommand
-    sp_apply = subparsers.add_parser("apply", help="Synchronize against active template")
-    sp_apply.add_argument("--dry-run", "-n", action="store_true", help="Preview changes")
+    # sync / apply
+    sp_sync = subparsers.add_parser("sync", aliases=["apply"], help="Synchronize system with active template")
+    sp_sync.add_argument("--preview", "-n", action="store_true", help="Preview changes")
 
-    # status subcommand
-    subparsers.add_parser("status", help="Inspect active template and link health")
+    # check (alias: status)
+    subparsers.add_parser("check", aliases=["status"], help="Check health and link status of managed dotfiles")
 
-    # diff subcommand
-    subparsers.add_parser("diff", help="Preview changes against active template")
+    # preview (alias: diff)
+    subparsers.add_parser("preview", aliases=["diff"], help="Preview planned changes against active template")
 
-    # restore subcommand
-    sp_restore = subparsers.add_parser("restore", help="Restore files from backup vault")
-    sp_restore.add_argument("backup_id", nargs="?", help="Specific backup ID to restore")
+    # undo (alias: rollback, restore)
+    sp_undo = subparsers.add_parser("undo", aliases=["rollback", "restore"], help="Undo changes and restore previous files")
+    sp_undo.add_argument("backup_id", nargs="?", help="Specific backup ID to restore (default: most recent)")
 
-    # backups subcommand
-    subparsers.add_parser("backups", help="List all backup sessions")
+    # history (alias: backups)
+    subparsers.add_parser("history", aliases=["backups"], help="List backup vault history")
 
-    # init subcommand
-    sp_init = subparsers.add_parser("init", help="Generate initial fig.toml template in directory")
-    sp_init.add_argument("path", nargs="?", default=".", help="Target directory")
+    # temp (alias: guest, borrow)
+    sp_temp = subparsers.add_parser("temp", aliases=["guest", "borrow"], help="Temporarily deploy dotfiles on coworker machine")
+    sp_temp.add_argument("path", help="Path to dotfile repository")
 
-    # borrow & unborrow / revert
-    sp_borrow = subparsers.add_parser("borrow", help="Temporarily deploy dotfiles on coworker machine")
-    sp_borrow.add_argument("path", help="Path to dotfile repository")
+    # revert (alias: unborrow)
+    subparsers.add_parser("revert", aliases=["unborrow"], help="Revert temporary dotfile override and restore original state")
 
-    subparsers.add_parser("unborrow", help="Cleanly revert temporary dotfile takeover")
-    subparsers.add_parser("revert", help="Alias for unborrow")
+    # setup (interactive REPL wizard)
+    sp_setup = subparsers.add_parser("setup", help="Run interactive setup wizard to generate starter fig.toml")
+    sp_setup.add_argument("path", nargs="?", default=".", help="Output directory (default: .)")
 
-    # profile subcommand
+    # profile
     sp_profile = subparsers.add_parser("profile", help="Manage named configuration profiles")
     sp_profile_sub = sp_profile.add_subparsers(dest="profile_action")
-    sp_profile_sub.add_parser("list", help="List profiles")
+    sp_profile_sub.add_parser("list", help="List available profiles")
     sp_prof_switch = sp_profile_sub.add_parser("switch", help="Switch active profile")
-    sp_prof_switch.add_argument("name", help="Profile name")
+    sp_prof_switch.add_argument("name", help="Profile name to activate")
 
     args = parser.parse_args(argv)
 
     engine = FigEngine()
 
-    # Case 1: Flag --bootstrap or -bootstrap was passed
+    # Case 1: Flag --bootstrap or -bootstrap passed
     if args.bootstrap is not None:
         target_path = Path(args.bootstrap).resolve()
-        return cmd_bootstrap(engine, target_path, dry_run=args.dry_run)
+        return cmd_bootstrap(engine, target_path, dry_run=args.preview)
 
-    # Case 2: Subcommand specified
-    if args.command == "bootstrap":
-        return cmd_bootstrap(engine, Path(args.path).resolve(), dry_run=args.dry_run or args.dry_run)
-    elif args.command == "apply":
-        return cmd_apply(engine, dry_run=args.dry_run)
-    elif args.command == "status":
-        return cmd_status(engine)
-    elif args.command == "diff":
-        return cmd_apply(engine, dry_run=True)
-    elif args.command == "restore":
-        return cmd_restore(engine, args.backup_id)
-    elif args.command == "backups":
-        return cmd_backups(engine)
-    elif args.command == "init":
-        return cmd_init(Path(args.path).resolve())
-    elif args.command == "borrow":
-        return cmd_borrow(engine, Path(args.path).resolve())
-    elif args.command in ("unborrow", "revert"):
-        return cmd_unborrow(engine)
-    elif args.command == "profile":
+    # Case 2: Subcommands
+    cmd = args.command
+    if cmd == "bootstrap":
+        return cmd_bootstrap(engine, Path(args.path).resolve(), dry_run=args.preview or getattr(args, "preview", False))
+    elif cmd in ("sync", "apply"):
+        return cmd_sync(engine, dry_run=args.preview or getattr(args, "preview", False))
+    elif cmd in ("check", "status"):
+        return cmd_check(engine)
+    elif cmd in ("preview", "diff"):
+        return cmd_sync(engine, dry_run=True)
+    elif cmd in ("undo", "rollback", "restore"):
+        return cmd_undo(engine, args.backup_id)
+    elif cmd in ("history", "backups"):
+        return cmd_history(engine)
+    elif cmd in ("temp", "guest", "borrow"):
+        return cmd_temp(engine, Path(args.path).resolve())
+    elif cmd in ("revert", "unborrow"):
+        return cmd_revert(engine)
+    elif cmd == "setup":
+        run_interactive_wizard(Path(args.path).resolve(), interactive=sys.stdin.isatty())
+        return 0
+    elif cmd == "profile":
         pm = ProfileManager(engine.state)
         if args.profile_action == "list":
             profs = pm.list_profiles()
@@ -297,8 +293,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.profile_action == "switch":
             try:
                 pm.switch_profile(args.name)
-                print(f"Switched active profile to '{args.name}'. Applying...")
-                return cmd_apply(engine, dry_run=False)
+                print(f"Switched active profile to '{args.name}'. Synchronizing...")
+                return cmd_sync(engine, dry_run=False)
             except Exception as e:
                 print(f"Error switching profile: {e}", file=sys.stderr)
                 return 1
@@ -306,19 +302,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             sp_profile.print_help()
             return 0
 
-    # Case 3: No command or flags -> Default behavior: apply active template
+    # Case 3: Bare 'fig' with no arguments
     active_path = engine.state.get_active_template_path()
     if active_path and active_path.exists():
-        return cmd_apply(engine, dry_run=args.dry_run)
+        # Active template exists -> routine sync
+        return cmd_sync(engine, dry_run=args.preview)
     else:
-        # No active template yet: show welcoming guide
-        print_banner()
-        print("No active template configured.")
-        print("To bootstrap dotfiles from a repository directory:")
-        print("  fig bootstrap /path/to/dotfiles")
-        print("  or: cd /path/to/dotfiles && fig --bootstrap\n")
-        print("Run 'fig --help' for all options.")
-        return 0
+        # No active template exists and not bootstrap -> enter interactive setup wizard
+        is_interactive = sys.stdin.isatty()
+        if is_interactive:
+            run_interactive_wizard(Path.cwd(), interactive=True)
+            return 0
+        else:
+            # Non-interactive shell (e.g. pipe, script)
+            print_banner()
+            print("No active template configured.")
+            print("To generate a starter template, run: fig setup")
+            print("To bootstrap from your dotfiles repo, run: fig -bootstrap /path/to/dotfiles\n")
+            return 0
 
 
 if __name__ == "__main__":
