@@ -1,19 +1,19 @@
 # Fig
 
-> **A fast, auditable, and transparent user & system configuration / dotfile manager.**
+> **Fast, auditable, and transparent user & system configuration / dotfile manager.**
 
 `fig` maps source dotfile repositories to system destinations using declarative templates (`fig.toml`), cross-platform links (symlinks, junctions, hardlinks), zero-loss collision backups, and reversible profiles.
 
 [![Tests](https://img.shields.io/badge/tests-31%20passed-brightgreen.svg)]()
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)]()
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-blue.svg)]()
-[![License](https://img.shields.io/badge/license-MIT-green.svg)]()
+[![License](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 
 ---
 
 ## Key Highlights
 
-- **Temporary Userspace Overrides ("Coworker Mode")**: Need to help a coworker or friend on their workstation? Run `fig temp <your-repo>` to temporarily transform their machine into your familiar environment with your editor, shell, and keybindings. When you're done, run `fig revert` to instantly restore their machine back to its exact previous state—zero residue, zero manual cleanup.
+- **Temporary Userspace Overrides ("")**: Need to help somebody on their workstation and dont want to override their configs/binds? Run `fig temp <your-repo>` to temporarily transform their machine into your familiar environment with your editor, shell, and whatever else you have specced in your template. When you're done, run `fig revert` to instantly restore their machine back to its exact previous state! (If you overrode their nvim plugins and **installed** your own, be nice enough to revert it back through the plugin manager, fig wont do that! 😅)
 - **Safety Guard, Mandatory System Specs & Redundancy Disaster Vault**: Modifying system files (`/etc/`, systemd units, Windows system files) is strictly isolated from user dotfiles. Every system entry requires an explicit pathspec, triggers a prominent breaking-changes warning banner requiring user confirmation (`-y` to bypass), prompts for elevated permissions (UAC on Windows / `sudo` on Linux), and archives redundant backups to an independent machine-wide vault (`%ProgramData%\fig\backups\` or `/var/backups/fig/`) ensuring disaster recoverability even if user files are wiped.
 - **Full Audit Logging**: Every operation—from link deployments and collision backups to system rollbacks—is logged with ISO timestamps in `~/.fig/logs/fig.log` and the system redundancy audit log for complete accountability.
 - **Interactive Terminal Suite (REPL Builder, Visual Viewer & In-Place Editor)**:
