@@ -67,23 +67,31 @@ def is_system_path(dest_expr: str) -> bool:
     return False
 
 
-def parse_pathspec_file(pathspec_file: Path) -> Tuple[Dict[str, str], bool]:
+def parse_pathspec_file(pathspec_file: Path) -> Tuple[Dict[str, str], bool, Dict[str, Any]]:
     """Parse a pathspec.txt file.
-    Returns (targets_dict, is_system_scope).
+    Supports:
+      destination = ~/.local/share/app
+      windows = %APPDATA%/app
+      posix = ~/.local/share/app
+      link_mode = symlink | hardlink | junction | copy
+      type = dir | file
+      scope = system | user
+    Returns (targets_dict, is_system_scope, metadata_dict).
     """
     results: Dict[str, str] = {}
+    metadata: Dict[str, Any] = {}
     is_system = False
     if not pathspec_file.is_file():
-        return results, is_system
+        return results, is_system, metadata
 
     try:
         lines = pathspec_file.read_text(encoding="utf-8").splitlines()
     except Exception:
-        return results, is_system
+        return results, is_system, metadata
 
     cleaned_lines = [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
     if not cleaned_lines:
-        return results, is_system
+        return results, is_system, metadata
 
     for line in cleaned_lines:
         if "=" in line:
@@ -93,6 +101,12 @@ def parse_pathspec_file(pathspec_file: Path) -> Tuple[Dict[str, str], bool]:
             if k == "scope":
                 if v.lower() == "system":
                     is_system = True
+                metadata["scope"] = v.lower()
+            elif k in ("link_mode", "mode"):
+                metadata["link_mode"] = v.lower()
+            elif k in ("type", "kind"):
+                metadata["type"] = v.lower()
+                metadata["is_directory"] = v.lower() in ("dir", "directory", "tree")
             elif k in ("destination", "dest", "target", "default", "universal"):
                 results["universal"] = v
                 if is_system_path(v):
@@ -107,7 +121,7 @@ def parse_pathspec_file(pathspec_file: Path) -> Tuple[Dict[str, str], bool]:
             if is_system_path(line):
                 is_system = True
 
-    return results, is_system
+    return results, is_system, metadata
 
 
 class RepoScanner:
@@ -134,11 +148,13 @@ class RepoScanner:
                 if any(part in IGNORE_DIR_NAMES for part in parent_dir.parts):
                     continue
                 rel_dir = parent_dir.relative_to(self.repo_root)
-                specs, item_is_sys = parse_pathspec_file(p)
+                specs, item_is_sys, meta = parse_pathspec_file(p)
 
                 # Filter by requested scope
                 if scan_system != item_is_sys:
                     continue
+
+                is_dir = meta.get("is_directory", True)
 
                 for os_key, dest in specs.items():
                     target_os = None if os_key == "universal" else os_key
@@ -146,7 +162,7 @@ class RepoScanner:
                         app_name=parent_dir.name,
                         source_rel=str(rel_dir).replace("\\", "/"),
                         dest_expr=dest,
-                        is_directory=True,
+                        is_directory=is_dir,
                         is_system=item_is_sys,
                         detection_source="pathspec.txt",
                         os_target=target_os,

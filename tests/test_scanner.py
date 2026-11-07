@@ -20,7 +20,7 @@ class TestScanner(unittest.TestCase):
     def test_parse_pathspec_single_line(self):
         ps_file = self.repo_dir / "pathspec.txt"
         ps_file.write_text("~/.local/share/my_app\n", encoding="utf-8")
-        res, is_sys = parse_pathspec_file(ps_file)
+        res, is_sys, meta = parse_pathspec_file(ps_file)
         self.assertEqual(res.get("universal"), "~/.local/share/my_app")
         self.assertFalse(is_sys)
 
@@ -31,12 +31,16 @@ class TestScanner(unittest.TestCase):
 windows = %APPDATA%/my_app
 linux = ~/.config/my_app
 macos = ~/Library/Application Support/my_app
+link_mode = symlink
+type = dir
 """
         ps_file.write_text(content, encoding="utf-8")
-        res, is_sys = parse_pathspec_file(ps_file)
+        res, is_sys, meta = parse_pathspec_file(ps_file)
         self.assertEqual(res.get("windows"), "%APPDATA%/my_app")
         self.assertEqual(res.get("linux"), "~/.config/my_app")
         self.assertEqual(res.get("macos"), "~/Library/Application Support/my_app")
+        self.assertEqual(meta.get("link_mode"), "symlink")
+        self.assertTrue(meta.get("is_directory"))
 
     def test_scan_nested_nvim_directory(self):
         # Create nvim with nested dirs
