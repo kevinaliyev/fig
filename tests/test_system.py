@@ -6,10 +6,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fig.core.config import FigState
-from fig.core.elevation import is_elevated, display_breaking_changes_warning
-from fig.core.template import Template
-from fig.modules.system import SystemConfigManager
+from fig.config.state import FigState
+from fig.utils.elevation import is_elevated, display_breaking_changes_warning
+from fig.config.template import Template
+from fig.sync.system import SystemConfigManager
 
 
 class TestSystemConfig(unittest.TestCase):

@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fig.core.platform import OperatingSystem
-from fig.core.template import Template, discover_template, generate_default_template
+from fig.config.platform import OperatingSystem
+from fig.config.template import Template, discover_template, generate_default_template
 
 
 class TestTemplate(unittest.TestCase):
@@ -81,6 +81,55 @@ name = "cross-platform-test"
         tpl = generate_default_template(self.repo_dir)
         self.assertIn("git", tpl.presets)
         self.assertIn(".gitconfig", tpl.mappings)
+
+    def test_explicit_mappings_not_blocked_by_ignore(self):
+        # Even if ignore list has 'nvim', explicit mappings for nvim/.config/nvim must resolve
+        tpl = Template(
+            name="ignore-override-test",
+            ignore_patterns=[".git", "nvim"],
+            mappings={"nvim/.config/nvim": "~/.config/nvim"},
+        )
+        plan = tpl.resolve_plan(self.repo_dir)
+        dest_names = [dest.name for _, dest in plan]
+        self.assertIn("nvim", dest_names)
+
+    def test_per_link_mode_and_resolved_link_tuple(self):
+        """Test inline table mode overrides and ResolvedLink backward-compatible tuple behavior."""
+        from fig.config.template import ResolvedLink
+
+        tpl_path = self.repo_dir / "mode_test.toml"
+        toml_content = """
+[meta]
+name = "mode-test"
+
+[mappings]
+"shared.conf" = { target = "~/shared.conf", mode = "symlink" }
+"nvim_dir" = { target = "~/.config/nvim", mode = "junction" }
+"""
+        tpl_path.write_text(toml_content, encoding="utf-8")
+        tpl = Template.load(tpl_path)
+
+        self.assertEqual(tpl.mappings["nvim_dir"]["mode"], "junction")
+        self.assertEqual(tpl.mappings["shared.conf"]["mode"], "symlink")
+
+        # Resolve plan
+        plan = tpl.resolve_plan(self.repo_dir)
+        self.assertEqual(len(plan), 2)
+
+        # Verify backward-compatible 2-element tuple unpacking
+        for src, dest in plan:
+            self.assertIsInstance(src, Path)
+            self.assertIsInstance(dest, Path)
+
+        # Verify .mode property exists on ResolvedLink instances
+        nvim_link = next(link for link in plan if "nvim" in str(link.dest))
+        self.assertEqual(nvim_link.mode, "junction")
+
+        # Save and verify clean TOML serialization
+        save_path = self.repo_dir / "mode_saved.toml"
+        tpl.save(save_path)
+        reloaded = Template.load(save_path)
+        self.assertEqual(reloaded.mappings["nvim_dir"]["mode"], "junction")
 
 
 if __name__ == "__main__":

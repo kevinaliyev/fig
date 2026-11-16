@@ -8,7 +8,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
+from unittest.mock import patch
 
+from fig import __version__
 from fig.cli import main
 
 
@@ -51,7 +53,7 @@ name = "cli-test"
             with self.assertRaises(SystemExit) as cm:
                 main(["--version"])
             self.assertEqual(cm.exception.code, 0)
-        self.assertIn("fig 0.1.0", buf.getvalue())
+        self.assertIn(f"fig {__version__}", buf.getvalue())
 
     def test_cli_bootstrap_sync_check_and_undo(self):
         # 1. Bootstrap
@@ -111,6 +113,64 @@ name = "cli-test"
             ret = main(["revert"])
             self.assertEqual(ret, 0)
         self.assertFalse(self.dest_ini.exists())
+
+    @patch("fig.cli.clone_remote_repo")
+    def test_cli_bootstrap_remote_git_url(self, mock_clone):
+        mock_clone.return_value = self.repo_dir
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ret = main(["bootstrap", "gh:octocat/dotfiles", "--dest", str(self.tmp_dir / "custom_dest")])
+            self.assertEqual(ret, 0)
+        mock_clone.assert_called_once()
+        args, kwargs = mock_clone.call_args
+        self.assertEqual(args[0], "gh:octocat/dotfiles")
+        self.assertEqual(kwargs.get("dest_dir"), (self.tmp_dir / "custom_dest").resolve())
+
+    @patch("fig.cli.run_rebuilder")
+    def test_cli_rebuild_command(self, mock_rebuilder):
+        mock_rebuilder.return_value = self.repo_dir / "fig.toml"
+        ret = main(["rebuild"])
+        self.assertEqual(ret, 0)
+        mock_rebuilder.assert_called_once()
+
+    def test_cli_apply_cwd_vs_active_template_refresh(self):
+        # 1. Bootstrap template first
+        main(["bootstrap", str(self.repo_dir)])
+
+        # 2. Run 'apply' from outside repo_dir (cwd has no fig.toml)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ret = main(["apply"])
+            self.assertEqual(ret, 0)
+        output = buf.getvalue()
+        self.assertIn("No 'fig.toml' found in current directory", output)
+        self.assertIn("Refreshing current active template", output)
+
+        # 3. Create a separate folder with its own fig.toml and cd into it
+        other_repo = self.tmp_dir / "other_dotfiles"
+        other_repo.mkdir()
+        dest_other = self.mock_home / "other.ini"
+        (other_repo / "other.ini").write_text("setting=1", encoding="utf-8")
+        other_tpl = f"""
+[meta]
+name = "other-test"
+[mappings]
+"other.ini" = "{str(dest_other).replace(chr(92), '/')}"
+"""
+        (other_repo / "fig.toml").write_text(other_tpl, encoding="utf-8")
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(str(other_repo))
+            buf2 = io.StringIO()
+            with redirect_stdout(buf2):
+                ret2 = main(["apply"])
+                self.assertEqual(ret2, 0)
+            output2 = buf2.getvalue()
+            self.assertIn("Found 'fig.toml' in current working directory", output2)
+            self.assertTrue(dest_other.exists())
+        finally:
+            os.chdir(orig_cwd)
 
 
 if __name__ == "__main__":

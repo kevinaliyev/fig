@@ -7,4 +7,9 @@ __pycache__/
 .fig/
 build/
 dist/
+releases/
 *.egg-info/
+*.zip
+fig.toml
+.agents/
+tests/fixtures/

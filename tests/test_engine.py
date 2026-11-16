@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fig.core.config import FigState
-from fig.core.engine import FigEngine
+from fig.config.state import FigState
+from fig.sync.engine import FigEngine
 
 
 class TestFigEngineIntegration(unittest.TestCase):
@@ -16,6 +16,7 @@ class TestFigEngineIntegration(unittest.TestCase):
 
         # Setup mock FIG_HOME
         self.fig_home = self.tmp_dir / ".fig"
+        os.environ["FIG_HOME"] = str(self.fig_home)
         self.state = FigState(self.fig_home)
         self.engine = FigEngine(self.state)
 
@@ -49,6 +50,8 @@ backup_on_collision = true
         (self.repo_dir / "fig.toml").write_text(tpl_content, encoding="utf-8")
 
     def tearDown(self):
+        if "FIG_HOME" in os.environ:
+            del os.environ["FIG_HOME"]
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_bootstrap_idempotent_apply_and_restore(self):
@@ -69,9 +72,11 @@ backup_on_collision = true
         # 2. Idempotent Apply (running apply right after bootstrap)
         res_apply = self.engine.apply()
         self.assertTrue(res_apply.is_success)
-        # Both files should be ALREADY_LINKED
+        # Both files should be ALREADY_LINKED with zero redundant backups
         self.assertEqual(len(res_apply.already_linked), 2)
         self.assertEqual(len(res_apply.created), 0)
+        self.assertEqual(len(res_apply.backed_up), 0)
+        self.assertIsNone(res_apply.backup_id)
 
         # 3. Status check
         st = self.engine.status()

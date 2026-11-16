@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fig.core.backup import BackupSession, list_all_backups
+from fig.sync.backup import BackupSession, list_all_backups
 
 
 class TestBackupRestore(unittest.TestCase):
@@ -63,6 +63,27 @@ class TestBackupRestore(unittest.TestCase):
         reasons = [b["reason"] for b in backups]
         self.assertIn("first", reasons)
         self.assertIn("second", reasons)
+
+    def test_backup_parent_containing_backup_root_no_recursion(self):
+        # Emulate situation where destination being backed up is a parent of backups_root
+        parent_dir = self.tmp_dir / "my_config_parent"
+        parent_dir.mkdir()
+        (parent_dir / "app_file.txt").write_text("hello world")
+
+        # Put backup root INSIDE the parent being backed up!
+        nested_backups_root = parent_dir / "fig" / "backups"
+        nested_backups_root.mkdir(parents=True)
+
+        session = BackupSession.create(nested_backups_root, reason="test_nested")
+        # Backing up parent_dir must NOT recurse infinitely into nested_backups_root
+        entry = session.backup_collision(parent_dir)
+        self.assertIsNotNone(entry)
+        self.assertTrue(entry.is_dir)
+
+        # Restore
+        (parent_dir / "app_file.txt").write_text("modified")
+        session.restore()
+        self.assertEqual((parent_dir / "app_file.txt").read_text(), "hello world")
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import os
 import unittest
 from pathlib import Path
 
-from fig.core.platform import (
+from fig.config.platform import (
     CURRENT_OS,
     OperatingSystem,
     detect_os,

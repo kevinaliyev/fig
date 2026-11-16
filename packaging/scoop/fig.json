@@ -1,0 +1,21 @@
+{
+    "version": "0.5.9",
+    "description": "Fast, auditable configuration & dotfile manager",
+    "homepage": "https://github.com/yourusername/fig",
+    "license": "GPL-3.0-or-later",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/yourusername/fig/releases/download/v0.5.9/fig-v0.5.9-windows-amd64.zip",
+            "bin": "fig.exe",
+            "hash": "55c0886f4b272235981a9ebcdd32095e28ab46fbd08a6165b7ecfc4c09c57809"
+        }
+    },
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/yourusername/fig/releases/download/v$version/fig-v$version-windows-amd64.zip"
+            }
+        }
+    }
+}

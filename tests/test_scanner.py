@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fig.modules.scanner import RepoScanner, parse_pathspec_file
+from fig.builder.scanner import RepoScanner, parse_pathspec_file
 
 
 class TestScanner(unittest.TestCase):
@@ -70,6 +70,83 @@ type = dir
         self.assertEqual(len(tool_items), 1)
         self.assertEqual(tool_items[0].dest_expr, "~/.opt/nonstandard_tool")
         self.assertEqual(tool_items[0].detection_source, "pathspec.txt")
+
+    def test_scan_standard_application_packages(self):
+        # 1. Directory packages default to ~/.config/<dirname> with children
+        (self.repo_dir / "git").mkdir()
+        (self.repo_dir / "git" / ".gitconfig").write_text("[user]\nname=test")
+
+        (self.repo_dir / "pwsh").mkdir()
+        (self.repo_dir / "pwsh" / "profile.ps1").write_text("# pwsh profile")
+
+        (self.repo_dir / "wezterm").mkdir()
+        (self.repo_dir / "wezterm" / "wezterm.lua").write_text("-- wezterm config")
+
+        # 2. Standalone root file defaults to ~/ ($HOME)
+        (self.repo_dir / ".bashrc").write_text("export BASH=1")
+
+        scanner = RepoScanner(self.repo_dir)
+        configs = scanner.scan()
+
+        apps = {c.app_name.lower(): c for c in configs}
+        self.assertIn("git", apps)
+        self.assertEqual(apps["git"].dest_expr, "~/.config/git")
+        self.assertTrue(apps["git"].is_directory)
+        self.assertTrue(apps["git"].is_expandable)
+        self.assertEqual(len(apps["git"].children), 1)
+        self.assertEqual(apps["git"].children[0].dest_expr, "~/.gitconfig")
+
+        self.assertIn("pwsh", apps)
+        self.assertEqual(apps["pwsh"].dest_expr, "~/.config/pwsh")
+        self.assertTrue(apps["pwsh"].is_directory)
+        self.assertTrue(apps["pwsh"].is_expandable)
+
+        self.assertIn("wezterm", apps)
+        self.assertEqual(apps["wezterm"].dest_expr, "~/.config/wezterm")
+        self.assertTrue(apps["wezterm"].is_directory)
+
+        # Standalone root file
+        self.assertIn("bashrc", apps)
+        self.assertEqual(apps["bashrc"].dest_expr, "~/.bashrc")
+        self.assertFalse(apps["bashrc"].is_directory)
+
+        # Verify no duplicate entries for the same app
+        names = [c.app_name.lower() for c in configs]
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_scan_preserves_package_root_and_prefix_setup(self):
+        # Even if a package has a nested .config/<app> folder, the package root
+        # must remain the top-level directory, preserving all prefix/first-layer files.
+        nvim_root = self.repo_dir / "nvim"
+        nvim_root.mkdir()
+        (nvim_root / "init.lua").write_text("-- root init", encoding="utf-8")
+        (nvim_root / "lazy-lock.json").write_text("{}", encoding="utf-8")
+        (nvim_root / "lua" / "config").mkdir(parents=True)
+        (nvim_root / "lua" / "config" / "lazy.lua").write_text("-- lazy config", encoding="utf-8")
+        # Nested mirror folder
+        nested = nvim_root / ".config" / "nvim"
+        nested.mkdir(parents=True)
+        (nested / "nested.lua").write_text("-- nested", encoding="utf-8")
+
+        scanner = RepoScanner(self.repo_dir)
+        configs = scanner.scan()
+        apps = {c.app_name.lower(): c for c in configs}
+
+        self.assertIn("nvim", apps)
+        nvim_pkg = apps["nvim"]
+        # Source must be the root directory 'nvim', not 'nvim/.config/nvim'
+        self.assertEqual(nvim_pkg.source_rel, "nvim")
+        self.assertEqual(nvim_pkg.dest_expr, "~/.config/nvim")
+        # Must scan all files including root layer (init.lua, lazy-lock.json, etc.)
+        self.assertEqual(nvim_pkg.child_count, 4)
+        child_sources = [c.source_rel for c in nvim_pkg.children]
+        self.assertIn("nvim/init.lua", child_sources)
+        self.assertIn("nvim/lazy-lock.json", child_sources)
+
+        from fig.builder import get_all_leaf_items
+        leaf_sources = [c.source_rel for c in get_all_leaf_items(nvim_pkg)]
+        self.assertIn("nvim/lua/config/lazy.lua", leaf_sources)
+        self.assertIn("nvim/.config/nvim/nested.lua", leaf_sources)
 
 
 if __name__ == "__main__":
