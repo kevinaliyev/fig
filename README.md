@@ -35,9 +35,6 @@ Built with Python 3.11+ standard library only, Fig manages user dotfiles and ele
 git clone https://github.com/kevinaliyev/fig.git
 cd fig
 
-# Run unit tests
-python -m unittest discover tests
-
 # Build standalone binary and install to ~/.local/bin
 python scripts/release/install.py
 ```
