@@ -2,7 +2,7 @@
 
 ## Warning! This program is still undergoing QA Testing and features may be incomplete and/or broken!
 
-fig (`v0.5.9`) is a zero-dependency, auditable dotfile and configuration manager for Windows, Linux, and macOS.
+fig (`v0.5.9`) is a zero-dependency, declarative link manager for Windows, Linux, and macOS.
 
 Built with Python 3.11+ standard library only, Fig manages user dotfiles and elevated system configurations via declarative `fig.toml` templates—with automatic collision backups, rollback history, interactive REPL building, and temporary workstation takeovers.
 
@@ -32,11 +32,8 @@ Built with Python 3.11+ standard library only, Fig manages user dotfiles and ele
 
 ```powershell
 # Clone repository
-git clone https://github.com/youruser/fig.git
+git clone https://github.com/kevinaliyev/fig.git
 cd fig
-
-# Run unit tests
-python -m unittest discover tests
 
 # Build standalone binary and install to ~/.local/bin
 python scripts/release/install.py
