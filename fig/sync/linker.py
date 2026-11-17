@@ -116,14 +116,19 @@ def deploy_link(
     if not src.exists():
         return LinkStatus.FAILED, f"Source path does not exist: {src}"
 
-    # Self-link check: ensure destination path is not literally identical to source path
+    # Self-link check: ensure literal destination path is not identical to source path
+    if os.path.normcase(os.path.normpath(str(src))) == os.path.normcase(os.path.normpath(str(dest_path))):
+        return LinkStatus.FAILED, f"Source and destination cannot be identical: {src}"
+
+    # If a parent directory of dest_path is already a symlink/junction to the repo's parent dir,
+    # dest_path.parent.resolve() / dest_path.name will equal src -> already linked via parent!
     try:
         dest_location = dest_path.parent.resolve() / dest_path.name
     except Exception:
         dest_location = dest_path
 
     if os.path.normcase(os.path.normpath(str(src))) == os.path.normcase(os.path.normpath(str(dest_location))):
-        return LinkStatus.FAILED, f"Source and destination cannot be identical: {src}"
+        return LinkStatus.ALREADY_LINKED, f"Already linked via parent directory: {dest_path} -> {src}"
 
     # Check if already correctly linked or in sync
     if is_symlink_or_junction(dest_path):

@@ -15,6 +15,7 @@ from fig.ui.ansi import (
     render_banner,
     format_table,
     format_box,
+    get_terminal_width,
     badge_active,
     badge_kind,
     c_cyan,
@@ -372,7 +373,7 @@ def render_help_modal() -> str:
         f"  {c_red('quit (exit)')}        Cancel builder and exit without saving",
         "",
     ]
-    return format_box("Fig Template Builder — Command Reference", content, width=95)
+    return format_box("Fig Template Builder — Command Reference", content)
 
 
 def render_scoped_view(
@@ -393,7 +394,6 @@ def render_scoped_view(
     banner = render_banner(
         f"Fig Template Builder — [{scope_title}]",
         subtitle=f"Location: {path_str}  (Type 'help' for commands, ':' for menu)",
-        width=95,
     )
 
     active_items: List[DiscoveredConfig] = []
@@ -511,9 +511,10 @@ def render_scoped_view(
     else:
         output_lines.append(c_dim("\n  (No excluded items in current scope. Type '<#>' or 'exclude <#>' to exclude an item)"))
 
+    rule_w = min(110, max(40, get_terminal_width() - 2))
     legend = [
         "",
-        c_dim("─" * 95),
+        c_dim("─" * rule_w),
         f" {c_bold('Commands:')}  "
         f"{c_cyan('<#>')} Toggle  ·  "
         f"{c_cyan('cd <#>')} Open  ·  "
@@ -524,7 +525,7 @@ def render_scoped_view(
         f"{c_cyan('?')} Help  ·  "
         f"{c_green('done')} Save  ·  "
         f"{c_red('quit')} Exit",
-        c_dim("─" * 95),
+        c_dim("─" * rule_w),
     ]
     output_lines.extend(legend)
 

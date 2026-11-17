@@ -560,7 +560,7 @@ class TestBuilder(unittest.TestCase):
 
         box = format_box("Test Modal", ["Content line 1", "Content line 2"], width=40)
         plain = strip_ansi(box)
-        self.assertIn("┌── Test Modal", plain)
+        self.assertIn("┌─ Test Modal", plain)
         self.assertIn("Content line 1", plain)
         self.assertIn("Content line 2", plain)
         self.assertTrue(plain.strip().endswith("┘"))
@@ -568,7 +568,7 @@ class TestBuilder(unittest.TestCase):
         # Test clear_screen in TTY mode
         with patch("sys.stdout.isatty", return_value=True), patch("sys.stdout.write") as mock_write, patch("sys.stdout.flush"):
             clear_screen()
-            mock_write.assert_called_with("\033[2J\033[H")
+            mock_write.assert_called_with("\033[2J\033[3J\033[H")
 
         # Test clear_screen in non-TTY mode (no-op)
         with patch("sys.stdout.isatty", return_value=False), patch("sys.stdout.write") as mock_write:

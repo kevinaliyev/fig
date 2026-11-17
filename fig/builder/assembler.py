@@ -180,8 +180,9 @@ def merge_existing_template_into_discovered(
     ignore_set = set(template.ignore_patterns)
     matched_specs: Set[str] = set()
 
-    def _apply_item(item: DiscoveredConfig) -> None:
+    def _apply_item(item: DiscoveredConfig, parent_packed: bool = False) -> None:
         src = item.source_rel
+        is_packed_dir = False
         if src in all_specs:
             dest, mode, os_target = all_specs[src]
             matched_specs.add(src)
@@ -196,9 +197,14 @@ def merge_existing_template_into_discovered(
             if item.is_directory:
                 item.link_as_dir = True
                 item.force_pack = True
+                is_packed_dir = True
         elif src in ignore_set or Path(src).name in ignore_set:
             item.is_excluded = True
             item.customized = True
+        elif parent_packed:
+            # Ancestor directory is mapped as a whole packed directory in the template;
+            # its children are included automatically unless explicitly in ignore_set.
+            item.is_excluded = False
         elif all_specs:
             # If template has explicit mappings and this item is not mapped, check if any descendant is mapped
             has_mapped_child = False
@@ -210,7 +216,7 @@ def merge_existing_template_into_discovered(
                 item.is_excluded = True
 
         for ch in item.children:
-            _apply_item(ch)
+            _apply_item(ch, parent_packed=parent_packed or is_packed_dir)
 
         # If a directory has active children but itself is not in all_specs, it was unpacked
         if item.is_directory:

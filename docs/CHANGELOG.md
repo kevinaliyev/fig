@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [Unreleased] - 2026-11-17
+
+### Added
+- **Nested & Multi-Entry `pathspec.txt` Support (`fig.builder.scanner`, `docs/Template Spec.md`)**:
+  - Enabled user-mode `pathspec.txt` / `.fig.pathspec` overrides at any directory depth and added support for relative `file/dir = destination` key-value pairs inside a single `pathspec.txt`.
+  - Documented `pathspec.txt` / `.fig.pathspec` syntax, keys, and `.config/` rationalization in `docs/Template Spec.md`.
+- **Executable Icon & Asset Bundling (`packaging/fig.spec`)**:
+  - Bundled `assets/fig.png` into PyInstaller `datas` and embedded multi-resolution `assets/fig.ico` (`256x256`, `48x48`, `32x32`, `16x16`) as the Windows `fig.exe` icon.
+
+### Changed
+- **Responsive Rich Terminal Rendering (`fig.ui.ansi`, `fig.builder.render`, `pyproject.toml`)**:
+  - Migrated `format_table` and `format_box` to `rich` (`Table` and `Panel`) with dynamic `shutil.get_terminal_size()` width adaptation and scrollback clearing (`\033[2J\033[3J\033[H`).
+
+### Fixed
+- **Mixed Home + `.config/` Package Rationalization (`fig.builder.scanner`)**:
+  - Automatically unpacks packages with home-level dotfiles alongside `.config/` (e.g. `git/.gitconfig` + `git/.config/*`), while keeping self-contained packages like `nvim` packed and keeping `.gitconfig` inside `.config/` under `~/.config/git/` instead of colliding with `~/.gitconfig`.
+- **Packed Directory Merge & Linker / Engine Safety (`fig.builder.assembler`, `fig.sync.linker`, `fig.sync.engine`)**:
+  - Prevented `merge_existing_template_into_discovered` from marking children of packed directory mappings as excluded.
+  - Fixed `deploy_link` treating files inside an already-linked parent directory junction/symlink as self-link failures.
+  - Added a duplicate-destination conflict guard in `FigEngine._execute_deployment` so two source mappings cannot silently overwrite the same target path.
+
+---
+
 ## [0.5.9] - 2026-11-16
 
 ### Added

@@ -8,6 +8,9 @@ version = "0.5.9"
 description = "Auditable dotfile and configuration manager"
 readme = "README.md"
 requires-python = ">=3.11"
+dependencies = [
+    "rich>=13.0.0",
+]
 license = {text = "GPL-3.0-or-later"}
 authors = [
     {name = "Fig Contributors"}

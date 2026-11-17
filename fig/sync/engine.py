@@ -133,9 +133,20 @@ class FigEngine:
             return session
 
         # Phase 2: Execute links
+        seen_dests: Dict[str, Path] = {}
         for plan_item in plan:
             src, dest = plan_item[0], plan_item[1]
             dest_raw = Path(os.path.expanduser(str(dest)))
+
+            norm_dest = os.path.normcase(os.path.normpath(str(dest_raw)))
+            if norm_dest in seen_dests and seen_dests[norm_dest] != src:
+                result.failed.append((
+                    src,
+                    dest_raw,
+                    f"Duplicate destination conflict: {dest_raw} is already claimed by {seen_dests[norm_dest]}",
+                ))
+                continue
+            seen_dests[norm_dest] = src
             
             # Check collision
             has_collision = dest_raw.exists() or is_symlink_or_junction(dest_raw)

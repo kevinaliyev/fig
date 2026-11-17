@@ -8,7 +8,14 @@ from __future__ import annotations
 import os
 import sys
 import re
+import shutil
 from typing import List, Optional, Tuple, Sequence
+
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
+from rich import box
 
 # Windows virtual terminal initialization flag
 _VT_INITIALIZED = False
@@ -195,9 +202,21 @@ def badge_kind(is_dir: bool) -> str:
     return color("[file]", "magenta", bold=False)
 
 
-def render_banner(title: str, subtitle: Optional[str] = None, width: int = 86) -> str:
-    """Render a clean, modern header banner."""
-    sep = "=" * width
+def get_terminal_width(default: int = 120) -> int:
+    """Return current terminal column width with a sensible fallback."""
+    if not sys.stdout.isatty():
+        return default
+    try:
+        cols = shutil.get_terminal_size((default, 24)).columns
+        return max(40, cols)
+    except Exception:
+        return default
+
+
+def render_banner(title: str, subtitle: Optional[str] = None, width: Optional[int] = None) -> str:
+    """Render a clean, responsive header banner."""
+    w = width if width is not None else min(110, max(40, get_terminal_width() - 2))
+    sep = "=" * w
     lines = [
         c_cyan(sep, bold=True),
         f" {c_bold(title)}",
@@ -208,9 +227,10 @@ def render_banner(title: str, subtitle: Optional[str] = None, width: int = 86) -
     return "\n".join(lines)
 
 
-def render_warning_banner(title: str, subtitle: Optional[str] = None, width: int = 86) -> str:
+def render_warning_banner(title: str, subtitle: Optional[str] = None, width: Optional[int] = None) -> str:
     """Render a prominent alert/warning banner."""
-    sep = "!" * width
+    w = width if width is not None else min(110, max(40, get_terminal_width() - 2))
+    sep = "!" * w
     lines = [
         c_yellow(sep, bold=True),
         f" {c_yellow(c_bold(title))}",
@@ -227,83 +247,90 @@ def format_table(
     alignments: Optional[List[str]] = None,
     padding: int = 2,
 ) -> str:
-    """Format tabular data cleanly, calculating widths based on visible text (ignoring ANSI)."""
+    """Format tabular data cleanly using Rich, adapting automatically to terminal width."""
     if not headers and not rows:
         return ""
 
+    term_w = get_terminal_width()
+    use_color = colors_enabled()
+    console = Console(
+        width=term_w,
+        force_terminal=use_color,
+        no_color=not use_color,
+        legacy_windows=False,
+        highlight=False,
+    )
+
+    table = Table(
+        box=box.SIMPLE_HEAD,
+        expand=True,
+        pad_edge=False,
+        show_edge=False,
+        padding=(0, max(1, padding // 2)),
+    )
+
     num_cols = len(headers) if headers else max(len(r) for r in rows)
-    col_widths = [0] * num_cols
-
-    for i, h in enumerate(headers):
-        col_widths[i] = max(col_widths[i], visible_len(h))
-
-    for row in rows:
-        for i, cell in enumerate(row):
-            if i < num_cols:
-                col_widths[i] = max(col_widths[i], visible_len(cell))
-
-    pad_str = " " * padding
-
-    # Header line
-    hdr_cells = []
-    for i, h in enumerate(headers):
-        w = col_widths[i]
+    for i in range(num_cols):
+        h = headers[i] if i < len(headers) else ""
         align = alignments[i] if alignments and i < len(alignments) else "left"
-        cur_vlen = visible_len(h)
-        spaces = max(0, w - cur_vlen)
-        if align == "right":
-            hdr_cells.append(" " * spaces + c_bold(h))
-        else:
-            hdr_cells.append(c_bold(h) + " " * spaces)
-    
-    header_line = pad_str.join(hdr_cells)
-    divider_line = pad_str.join("-" * w for w in col_widths)
-
-    out_lines = [header_line, c_dim(divider_line)]
+        justify = "right" if align == "right" else "left"
+        # Keep compact badge/index columns single-line; allow long paths to wrap cleanly inside their column
+        is_compact = h in ("#", "Type", "Mode", "Scope", "Link Mode")
+        table.add_column(
+            h,
+            justify=justify,
+            no_wrap=is_compact,
+            overflow="ellipsis" if is_compact else "fold",
+            ratio=None if is_compact else 1,
+        )
 
     for row in rows:
-        row_cells = []
-        for i, cell in enumerate(row):
-            if i >= num_cols:
-                break
-            w = col_widths[i]
-            align = alignments[i] if alignments and i < len(alignments) else "left"
-            cur_vlen = visible_len(cell)
-            spaces = max(0, w - cur_vlen)
-            if align == "right":
-                row_cells.append(" " * spaces + cell)
-            else:
-                row_cells.append(cell + " " * spaces)
-        out_lines.append(pad_str.join(row_cells))
+        cells = []
+        for i in range(num_cols):
+            raw = str(row[i]) if i < len(row) else ""
+            cells.append(Text.from_ansi(raw))
+        table.add_row(*cells)
 
-    return "\n".join(out_lines)
+    with console.capture() as capture:
+        console.print(table, end="")
+    return capture.get().rstrip("\n")
 
 
 def clear_screen() -> None:
-    """Clear terminal screen and place cursor at home position if stdout is a TTY."""
+    """Clear terminal screen and scrollback buffer if stdout is a TTY."""
     if sys.stdout.isatty():
-        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.write("\033[2J\033[3J\033[H")
         sys.stdout.flush()
 
 
 def format_box(
     title: str,
     lines: Sequence[str],
-    width: int = 90,
+    width: Optional[int] = None,
     color_name: str = "cyan",
 ) -> str:
-    """Render text lines inside a modern framed box with a title."""
-    title_vlen = visible_len(title)
-    inner_width = max(width - 4, title_vlen + 6)
-
-    top_border = f"┌── {title} " + "─" * max(0, inner_width - title_vlen - 5) + "┐"
-    bottom_border = "└" + "─" * inner_width + "┘"
-
-    out = [color(top_border, color_name, bold=True)]
-    for line in lines:
-        vlen = visible_len(line)
-        pad = max(0, inner_width - vlen - 2)
-        out.append(f"{color('│', color_name, bold=True)}  {line}{' ' * pad}{color('│', color_name, bold=True)}")
-    out.append(color(bottom_border, color_name, bold=True))
-    return "\n".join(out)
+    """Render text lines inside a responsive Rich panel."""
+    term_w = get_terminal_width()
+    box_w = min(width, term_w) if width is not None else min(110, term_w)
+    use_color = colors_enabled()
+    console = Console(
+        width=box_w,
+        force_terminal=use_color,
+        no_color=not use_color,
+        legacy_windows=False,
+        highlight=False,
+    )
+    body = Text.from_ansi("\n".join(lines))
+    panel = Panel(
+        body,
+        title=title,
+        title_align="left",
+        box=box.SQUARE,
+        border_style=color_name if use_color else "none",
+        width=box_w,
+        padding=(0, 1),
+    )
+    with console.capture() as capture:
+        console.print(panel, end="")
+    return capture.get().rstrip("\n")
 

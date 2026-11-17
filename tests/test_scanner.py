@@ -137,6 +137,8 @@ type = dir
         # Source must be the root directory 'nvim', not 'nvim/.config/nvim'
         self.assertEqual(nvim_pkg.source_rel, "nvim")
         self.assertEqual(nvim_pkg.dest_expr, "~/.config/nvim")
+        # Packages without divergent home-level siblings stay packed as a whole directory
+        self.assertTrue(nvim_pkg.link_as_dir)
         # Must scan all files including root layer (init.lua, lazy-lock.json, etc.)
         self.assertEqual(nvim_pkg.child_count, 4)
         child_sources = [c.source_rel for c in nvim_pkg.children]
@@ -144,9 +146,79 @@ type = dir
         self.assertIn("nvim/lazy-lock.json", child_sources)
 
         from fig.builder import get_all_leaf_items
-        leaf_sources = [c.source_rel for c in get_all_leaf_items(nvim_pkg)]
+        leaf_sources = {c.source_rel: c.dest_expr for c in get_all_leaf_items(nvim_pkg)}
         self.assertIn("nvim/lua/config/lazy.lua", leaf_sources)
+        self.assertEqual(leaf_sources["nvim/lua/config/lazy.lua"], "~/.config/nvim/lua/config/lazy.lua")
         self.assertIn("nvim/.config/nvim/nested.lua", leaf_sources)
+
+    def test_scan_auto_rationalizes_mixed_home_and_dot_config(self):
+        git_dir = self.repo_dir / "git"
+        (git_dir / ".config").mkdir(parents=True)
+        (git_dir / ".gitconfig").write_text("[user]\nname = Test\n", encoding="utf-8")
+        (git_dir / ".config" / ".gitconfig").write_text("[include]\n", encoding="utf-8")
+        (git_dir / ".config" / "ignore").write_text("*.log\n", encoding="utf-8")
+        (git_dir / ".config" / "attributes").write_text("* text=auto\n", encoding="utf-8")
+
+        scanner = RepoScanner(self.repo_dir)
+        configs = scanner.scan()
+        apps = {c.app_name.lower(): c for c in configs}
+
+        self.assertIn("git", apps)
+        git_pkg = apps["git"]
+        # Mixed home + .config destinations must auto-unpack the package
+        self.assertFalse(git_pkg.link_as_dir)
+
+        from fig.builder import get_all_leaf_items, build_template_from_items
+        leaves = {c.source_rel: c.dest_expr for c in get_all_leaf_items(git_pkg)}
+        self.assertEqual(leaves.get("git/.gitconfig"), "~/.gitconfig")
+        self.assertEqual(leaves.get("git/.config/.gitconfig"), "~/.config/git/.gitconfig")
+        self.assertEqual(leaves.get("git/.config/ignore"), "~/.config/git/ignore")
+        self.assertEqual(leaves.get("git/.config/attributes"), "~/.config/git/attributes")
+
+        tpl = build_template_from_items(self.repo_dir, configs)
+        self.assertEqual(tpl.mappings.get("git/.gitconfig"), "~/.gitconfig")
+        self.assertEqual(tpl.mappings.get("git/.config/ignore"), "~/.config/git/ignore")
+        self.assertEqual(tpl.mappings.get("git/.config/attributes"), "~/.config/git/attributes")
+
+    def test_scan_nested_pathspec_and_relative_key_value_mappings(self):
+        # 1. Single pathspec.txt with relative file & dir key-value pairs
+        git_dir = self.repo_dir / "git"
+        (git_dir / ".config").mkdir(parents=True)
+        (git_dir / ".gitconfig").write_text("[user]\nname = Test\n", encoding="utf-8")
+        (git_dir / ".config" / "config").write_text("[core]\n", encoding="utf-8")
+        (git_dir / ".config" / "ignore").write_text("*.tmp\n", encoding="utf-8")
+        (git_dir / "pathspec.txt").write_text(
+            ".gitconfig = ~/.gitconfig\n"
+            ".config = ~/.config/git\n"
+            ".config/ignore = ~/.config/git/global_ignore\n",
+            encoding="utf-8",
+        )
+
+        # 2. Nested pathspec.txt inside a subdirectory
+        pkg_dir = self.repo_dir / "my_pkg"
+        (pkg_dir / "sub").mkdir(parents=True)
+        (pkg_dir / "root.conf").write_text("root=1\n", encoding="utf-8")
+        (pkg_dir / "sub" / "nested.conf").write_text("nested=1\n", encoding="utf-8")
+        (pkg_dir / "sub" / "pathspec.txt").write_text("~/custom_sub\n", encoding="utf-8")
+
+        scanner = RepoScanner(self.repo_dir)
+        configs = scanner.scan()
+        apps = {c.app_name: c for c in configs}
+
+        from fig.builder import get_all_leaf_items
+        git_leaves = {c.source_rel: c.dest_expr for c in get_all_leaf_items(apps["git"])}
+        self.assertFalse(apps["git"].link_as_dir)
+        self.assertEqual(git_leaves.get("git/.gitconfig"), "~/.gitconfig")
+        self.assertEqual(git_leaves.get("git/.config/config"), "~/.config/git/config")
+        self.assertEqual(git_leaves.get("git/.config/ignore"), "~/.config/git/global_ignore")
+        # pathspec.txt itself must be ignored and never included as a leaf
+        self.assertNotIn("git/pathspec.txt", git_leaves)
+
+        pkg_leaves = {c.source_rel: c.dest_expr for c in get_all_leaf_items(apps["my_pkg"])}
+        self.assertFalse(apps["my_pkg"].link_as_dir)
+        self.assertEqual(pkg_leaves.get("my_pkg/root.conf"), "~/.config/my_pkg/root.conf")
+        self.assertEqual(pkg_leaves.get("my_pkg/sub/nested.conf"), "~/custom_sub/nested.conf")
+        self.assertNotIn("my_pkg/sub/pathspec.txt", pkg_leaves)
 
 
 if __name__ == "__main__":

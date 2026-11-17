@@ -20,7 +20,8 @@ IGNORE_DIR_NAMES = {
 }
 IGNORE_FILE_NAMES = {
     ".gitignore", "README.md", "readme.md", "README", "LICENSE", "LICENSE.md",
-    "fig.toml", ".fig.toml", "fig.template.toml", ".DS_Store"
+    "fig.toml", ".fig.toml", "fig.template.toml", ".DS_Store",
+    "pathspec.txt", ".fig.pathspec",
 }
 
 KNOWN_CONFIG_DIRS = {
@@ -91,6 +92,11 @@ def is_system_path(dest_expr: str) -> bool:
     return False
 
 
+_RESERVED_META_KEYS = {"scope", "link_mode", "mode", "type", "kind"}
+_UNIVERSAL_DEST_KEYS = {"destination", "dest", "target", "default", "universal"}
+_OS_KEYS = {"windows", "linux", "macos", "posix"}
+
+
 def parse_pathspec_file(pathspec_file: Path) -> Tuple[Dict[str, str], bool, Dict[str, Any]]:
     """Parse a pathspec.txt file.
     Supports:
@@ -100,6 +106,7 @@ def parse_pathspec_file(pathspec_file: Path) -> Tuple[Dict[str, str], bool, Dict
       link_mode = symlink | hardlink | junction | copy
       type = dir | file
       scope = system | user
+      relative/path = ~/custom/target   (nested file or directory overrides)
     Returns (targets_dict, is_system_scope, metadata_dict).
     """
     results: Dict[str, str] = {}
@@ -120,7 +127,8 @@ def parse_pathspec_file(pathspec_file: Path) -> Tuple[Dict[str, str], bool, Dict
     for line in cleaned_lines:
         if "=" in line:
             key, val = line.split("=", 1)
-            k = key.strip().lower()
+            raw_k = key.strip()
+            k = raw_k.lower()
             v = val.strip().strip('"').strip("'")
             if k == "scope":
                 if v.lower() == "system":
@@ -131,14 +139,21 @@ def parse_pathspec_file(pathspec_file: Path) -> Tuple[Dict[str, str], bool, Dict
             elif k in ("type", "kind"):
                 metadata["type"] = v.lower()
                 metadata["is_directory"] = v.lower() in ("dir", "directory", "tree")
-            elif k in ("destination", "dest", "target", "default", "universal"):
+            elif k in _UNIVERSAL_DEST_KEYS:
                 results["universal"] = v
                 if is_system_path(v):
                     is_system = True
-            else:
+            elif k in _OS_KEYS:
                 results[k] = v
                 if is_system_path(v):
                     is_system = True
+            else:
+                # Relative file/directory path override within this directory
+                rel_sub = raw_k.replace("\\", "/").strip("/")
+                if rel_sub.startswith("./"):
+                    rel_sub = rel_sub[2:]
+                if rel_sub:
+                    metadata.setdefault("mappings", {})[rel_sub] = v
         else:
             # First line without '='
             results["universal"] = line
@@ -195,6 +210,14 @@ class RepoScanner:
                         is_dir = meta.get("is_directory", True)
                         explicit_pathspecs[rel_dir] = (host_dest, item_is_sys, is_dir)
 
+                    for sub_rel, sub_dest in meta.get("mappings", {}).items():
+                        full_rel = sub_rel if rel_dir == "." else f"{rel_dir}/{sub_rel}"
+                        if full_rel not in explicit_pathspecs:
+                            target_path = self.repo_root / full_rel
+                            sub_is_dir = target_path.is_dir() if target_path.exists() else False
+                            sub_is_sys = item_is_sys or is_system_path(sub_dest)
+                            explicit_pathspecs[full_rel] = (sub_dest, sub_is_sys, sub_is_dir)
+
         # Handle system scan mode
         if scan_system:
             for rel_dir, (dest_expr, item_is_sys, is_dir) in explicit_pathspecs.items():
@@ -220,12 +243,19 @@ class RepoScanner:
                 continue
 
             app = f.stem.lstrip(".") or f.name.lstrip(".")
+            ps_entry = explicit_pathspecs.get(f.name)
+            if ps_entry and not ps_entry[1]:
+                f_dest = ps_entry[0]
+                f_src = "pathspec.txt"
+            else:
+                f_dest = f"~/{f.name}"
+                f_src = "root file ($HOME)"
             discovered.append(DiscoveredConfig(
                 app_name=app,
                 source_rel=f.name,
-                dest_expr=f"~/{f.name}",
+                dest_expr=f_dest,
                 is_directory=False,
-                detection_source="root file ($HOME)",
+                detection_source=f_src,
             ))
 
         # 3. Top-level directories in repo_root
@@ -289,7 +319,20 @@ class RepoScanner:
                 is_dir = True
 
             # Recursively scan children of scan_target
-            children, total_files = self._scan_children(scan_target, parent_dest=dest_expr, depth=1)
+            children, total_files = self._scan_children(
+                scan_target,
+                parent_dest=dest_expr,
+                depth=1,
+                explicit_pathspecs=explicit_pathspecs,
+                package_name=app_name,
+            )
+
+            # Unpack automatically if children have mixed/overridden destinations
+            # (e.g. git/.gitconfig -> ~/.gitconfig alongside git/.config/* -> ~/.config/git/*)
+            link_as_dir = True
+            if self._has_divergent_child_dest(children, dest_expr):
+                link_as_dir = False
+                self._rationalize_dot_config_children(children, app_dir, app_name)
 
             discovered.append(DiscoveredConfig(
                 app_name=app_name,
@@ -302,16 +345,64 @@ class RepoScanner:
                 depth=0,
                 children=children,
                 detection_source=detection_src,
+                link_as_dir=link_as_dir,
             ))
             seen_dirs.add(rel_dir)
 
         return discovered
+
+    @staticmethod
+    def _has_divergent_child_dest(children: List[DiscoveredConfig], parent_dest: str) -> bool:
+        """Return True if any descendant has a destination outside parent_dest or from pathspec.txt."""
+        prefix = parent_dest.rstrip("/") + "/"
+        for child in children:
+            if child.detection_source == "pathspec.txt":
+                return True
+            if not child.is_directory:
+                if not child.dest_expr.startswith(prefix):
+                    return True
+            else:
+                if RepoScanner._has_divergent_child_dest(child.children, parent_dest):
+                    return True
+        return False
+
+    @staticmethod
+    def _rationalize_dot_config_children(
+        children: List[DiscoveredConfig],
+        app_dir: Path,
+        package_name: str,
+    ) -> None:
+        """In a mixed-destination package (e.g. git/.gitconfig + git/.config/*),
+        rebase a top-level .config/ child onto ~/.config/<package_name>/...
+        unless it already has an explicit pathspec.txt override.
+        """
+        for child in children:
+            if not (child.is_directory and child.app_name == "config" and Path(child.source_rel).name == ".config"):
+                continue
+            if child.detection_source == "pathspec.txt":
+                continue
+            dot_config_dir = app_dir / ".config"
+            new_base = "~/.config" if (dot_config_dir / package_name).is_dir() else f"~/.config/{package_name}"
+            old_prefix = child.dest_expr.rstrip("/")
+            child.dest_expr = new_base
+            child.detection_source = ".config mirror"
+            RepoScanner._rebase_descendant_dests(child.children, old_prefix, new_base)
+
+    @staticmethod
+    def _rebase_descendant_dests(children: List[DiscoveredConfig], old_prefix: str, new_base: str) -> None:
+        for c in children:
+            if c.detection_source != "pathspec.txt" and c.dest_expr.startswith(old_prefix + "/"):
+                c.dest_expr = new_base + c.dest_expr[len(old_prefix):]
+            if c.is_directory:
+                RepoScanner._rebase_descendant_dests(c.children, old_prefix, new_base)
 
     def _scan_children(
         self,
         current_dir: Path,
         parent_dest: str,
         depth: int,
+        explicit_pathspecs: Optional[Dict[str, Tuple[str, bool, bool]]] = None,
+        package_name: Optional[str] = None,
     ) -> Tuple[List[DiscoveredConfig], int]:
         """Recursively scan child files and subdirectories."""
         children: List[DiscoveredConfig] = []
@@ -327,10 +418,16 @@ class RepoScanner:
 
             rel_path = str(entry.relative_to(self.repo_root)).replace("\\", "/")
             app_name = entry.stem.lstrip(".") or entry.name
+            ps_entry = explicit_pathspecs.get(rel_path) if explicit_pathspecs else None
 
             if entry.is_file():
                 total_files += 1
-                child_dest = self._get_default_child_dest(entry, parent_dest)
+                if ps_entry and not ps_entry[1]:
+                    child_dest = ps_entry[0]
+                    detection_src = "pathspec.txt"
+                else:
+                    child_dest = self._get_default_child_dest(entry, parent_dest)
+                    detection_src = "auto"
                 children.append(DiscoveredConfig(
                     app_name=app_name,
                     source_rel=rel_path,
@@ -338,16 +435,30 @@ class RepoScanner:
                     is_directory=False,
                     depth=depth,
                     parent_source_rel=str(current_dir.relative_to(self.repo_root)).replace("\\", "/"),
+                    detection_source=detection_src,
                 ))
             elif entry.is_dir():
+                if ps_entry and not ps_entry[1]:
+                    dir_dest = ps_entry[0]
+                    dir_link_as_dir = ps_entry[2]
+                    detection_src = "pathspec.txt"
+                else:
+                    dir_dest = f"{parent_dest}/{entry.name}"
+                    dir_link_as_dir = False
+                    detection_src = "auto"
+
                 sub_children, sub_file_count = self._scan_children(
-                    entry, parent_dest=f"{parent_dest}/{entry.name}", depth=depth + 1
+                    entry,
+                    parent_dest=dir_dest,
+                    depth=depth + 1,
+                    explicit_pathspecs=explicit_pathspecs,
+                    package_name=package_name,
                 )
                 total_files += sub_file_count
                 children.append(DiscoveredConfig(
                     app_name=app_name,
                     source_rel=rel_path,
-                    dest_expr=f"{parent_dest}/{entry.name}",
+                    dest_expr=dir_dest,
                     is_directory=True,
                     child_count=sub_file_count,
                     is_expandable=sub_file_count > 0,
@@ -355,7 +466,8 @@ class RepoScanner:
                     depth=depth,
                     parent_source_rel=str(current_dir.relative_to(self.repo_root)).replace("\\", "/"),
                     children=sub_children,
-                    link_as_dir=False,  # Subdirectories default to folder containers, not whole directory links
+                    link_as_dir=dir_link_as_dir,
+                    detection_source=detection_src,
                 ))
 
         return children, total_files
@@ -382,8 +494,15 @@ class RepoScanner:
         if CURRENT_OS == OperatingSystem.WINDOWS:
             if name_lower in ("profile.ps1", "microsoft.powershell_profile.ps1"):
                 return "~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1"
-        if name_lower in (".gitconfig", "gitconfig"):
-            return "~/.gitconfig"
-        if name_lower in (".tmux.conf", "tmux.conf"):
-            return "~/.tmux.conf"
+        try:
+            rel_parts = entry.relative_to(self.repo_root).parts
+        except ValueError:
+            rel_parts = entry.parts
+        in_dot_config = any(p == ".config" for p in rel_parts[:-1])
+
+        if not in_dot_config:
+            if name_lower in (".gitconfig", "gitconfig"):
+                return "~/.gitconfig"
+            if name_lower in (".tmux.conf", "tmux.conf"):
+                return "~/.tmux.conf"
         return f"{parent_dest}/{entry.name}"
