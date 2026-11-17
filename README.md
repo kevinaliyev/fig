@@ -2,7 +2,7 @@
 
 ## Warning! This program is still undergoing QA Testing and features may be incomplete and/or broken!
 
-fig (`v0.5.9`) is a zero-dependency, declarative link manager for Windows, Linux, and macOS.
+fig (`v0.5.9`) is a (almost) zero-dependency, declarative link manager for Windows, Linux, and macOS.
 
 Built with Python 3.11+ standard library only, Fig manages user dotfiles and elevated system configurations via declarative `fig.toml` templates—with automatic collision backups, rollback history, interactive REPL building, and temporary workstation takeovers.
 
